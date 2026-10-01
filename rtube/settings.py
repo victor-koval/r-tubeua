@@ -54,6 +54,8 @@ DEFAULTS = {
     "subs_mode": "embed",      # embed — вшити у відео, file — окремим .srt
     "theme": "Темна",
     "geometry": "",
+    "ytdlp_checked_at": 0,     # коли востаннє питали PyPI про свіжий yt-dlp
+    "ytdlp_bad": [],           # версії yt-dlp, що не пройшли самоперевірку або не запустились
 }
 
 _lock = threading.Lock()

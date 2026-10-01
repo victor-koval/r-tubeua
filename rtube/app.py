@@ -4,12 +4,13 @@ import io
 import os
 import queue
 import threading
+import time
 import urllib.request
 from tkinter import filedialog, messagebox
 
 import customtkinter as ctk
 
-from . import applog, downloader, formats, settings, tools, uikit
+from . import applog, downloader, formats, settings, tools, uikit, ytupdate
 from .uikit import FONT_SMALL, FONT_UI, FONT_UI_BOLD, GREEN, GREEN_HOVER
 
 APP_TITLE = "R-TubeUA"
@@ -18,6 +19,7 @@ APP_VERSION = "1.0.0"
 DEFAULT_SIZE = (1000, 800)
 MIN_SIZE = (880, 660)
 THUMB_SIZE = (224, 126)
+CLOSE_TIMEOUT = 5          # скільки чекати зупинки завантаження при закритті, с
 
 THEME_LIGHT, THEME_DARK, THEME_SYSTEM = "Світла", "Темна", "Системна"
 THEMES = {THEME_LIGHT: "Light", THEME_DARK: "Dark", THEME_SYSTEM: "System"}
@@ -325,18 +327,39 @@ class RTubeApp(ctk.CTk):
         self.lbl_empty.grid(row=0, column=0, pady=18)
 
     def _build_statusbar(self):
-        self.lbl_status = ctk.CTkLabel(self, text="Перевірка ffmpeg і JS-рантайму…",
+        bar = ctk.CTkFrame(self, fg_color="transparent")
+        bar.grid(row=4, column=0, sticky="ew", padx=24, pady=(0, 8))
+        bar.grid_columnconfigure(0, weight=1)
+        self.lbl_status = ctk.CTkLabel(bar, text="Перевірка ffmpeg і JS-рантайму…",
                                        font=FONT_SMALL, text_color=uikit.TEXT_MUTED, anchor="w")
-        self.lbl_status.grid(row=4, column=0, sticky="ew", padx=24, pady=(0, 8))
+        self.lbl_status.grid(row=0, column=0, sticky="ew")
+        self.lbl_update = ctk.CTkLabel(bar, text="", font=FONT_SMALL, anchor="e",
+                                       text_color=uikit.STATE_OK)
+        self.lbl_update.grid(row=0, column=1, sticky="e", padx=(8, 0))
+        self.btn_restart = ctk.CTkButton(bar, text="Перезапустити", width=110, height=24,
+                                         font=FONT_SMALL, command=self._restart)
 
     # ── оточення ──────────────────────────────────────────────────────────
     def _check_environment(self):
-        import yt_dlp.version
-        ffmpeg = tools.find_ffmpeg()
-        runtimes = tools.find_js_runtimes()
-        self.ui_events.put(("env", yt_dlp.version.__version__, ffmpeg, runtimes))
+        try:
+            import yt_dlp.version
+            ffmpeg = tools.find_ffmpeg()
+            runtimes = tools.find_js_runtimes()
+            self.ui_events.put(("env", yt_dlp.version.__version__, ffmpeg, runtimes))
+        except Exception as exc:
+            applog.error("Перевірка оточення не вдалася", exc)
+            self.ui_events.put(("env", "?", None, {}))
+        # Свіжий yt-dlp — після перевірки оточення, щоб не гальмувати старт.
+        try:
+            installed = ytupdate.check_and_install()
+            if installed:
+                self.ui_events.put(("ytdlp_ready", installed))
+        except Exception as exc:
+            applog.error("Оновлення yt-dlp не вдалося — працюю на поточному", exc)
 
     def _show_environment(self, version, ffmpeg, runtimes):
+        if ytupdate.state["source"] == "lib":
+            version += " (оновлено)"
         parts = [f"yt-dlp {version}", "ffmpeg ✓" if ffmpeg else "ffmpeg ✗"]
         parts.append(f"JS: {', '.join(runtimes)} ✓" if runtimes else "JS ✗")
         text = "  ·  ".join(parts)
@@ -587,6 +610,14 @@ class RTubeApp(ctk.CTk):
 
     # ── події з фонових потоків ───────────────────────────────────────────
     def _poll(self):
+        # Перепланування — у finally: якщо котрась подія впаде, решта вікна
+        # однаково має жити, а не застигнути без оновлень прогресу.
+        try:
+            self._drain_events()
+        finally:
+            self.after(100, self._poll)
+
+    def _drain_events(self):
         try:
             while True:
                 event = self.ui_events.get_nowait()
@@ -598,6 +629,10 @@ class RTubeApp(ctk.CTk):
                     self._hint(event[2], uikit.STATE_ERROR)
                 elif kind == "env":
                     self._show_environment(*event[1:])
+                elif kind == "ytdlp_ready":
+                    self.lbl_update.configure(text=f"yt-dlp {event[1]} завантажено — "
+                                                   "застосується після перезапуску")
+                    self.btn_restart.grid(row=0, column=2, padx=(8, 0))
         except queue.Empty:
             pass
         try:
@@ -612,21 +647,68 @@ class RTubeApp(ctk.CTk):
                     row.set_state(*payload)
         except queue.Empty:
             pass
-        self.after(100, self._poll)
 
     # ── решта ─────────────────────────────────────────────────────────────
     def _set_theme(self, name):
         ctk.set_appearance_mode(THEMES.get(name, "Dark"))
         settings.set_many(theme=name)
 
+    def report_callback_exception(self, exc_type, exc, tb):
+        """Виняток в обробнику кнопки чи події. У .exe без консолі Tk
+        інакше мовчки друкує його в нікуди."""
+        applog.get_logger().error("Помилка в інтерфейсі", exc_info=(exc_type, exc, tb))
+        try:
+            messagebox.showerror(APP_TITLE, f"Щось пішло не так: {exc}\n\n"
+                                            "Подробиці — кнопка «Лог» угорі.", parent=self)
+        except Exception:
+            pass
+
+    def _active_jobs(self):
+        return [r.job for r in self.rows.values() if r.job.state in ("queued", "running")]
+
+    def _restart(self):
+        if self._active_jobs():
+            self.lbl_update.configure(text="Дочекайтесь завершення завантажень, тоді перезапустіть",
+                                      text_color=uikit.STATE_WARN)
+            return
+        try:
+            ytupdate.relaunch()
+        except Exception as exc:
+            applog.error("Перезапуск не вдався", exc)
+            self.lbl_update.configure(text="Не вдалося перезапустити — закрийте й відкрийте вручну",
+                                      text_color=uikit.STATE_ERROR)
+            return
+        self._close_now()
+
     def on_closing(self):
-        active = [r.job for r in self.rows.values() if r.job.state in ("queued", "running")]
+        if getattr(self, "_closing", False):
+            return      # уже зупиняємось — повторне ✕ не перепитує
+        active = self._active_jobs()
         if active and not messagebox.askyesno(
                 APP_TITLE, f"Ще не завершено завантажень: {len(active)}.\n"
                            "Закрити програму й перервати їх?", parent=self):
             return
         for job in active:
             self.manager.cancel(job)
+        if self.manager.is_busy():
+            # Скасування спрацює на наступному кроці yt-dlp, після чого
+            # потік прибере .part і проміжні файли. Закрийся вікно одразу —
+            # потік загинув би разом із процесом і сміття лишилося б у теці.
+            self._closing = True
+            self.lbl_status.configure(text="Зупиняю завантаження…", text_color=uikit.STATE_WARN)
+            self._wait_and_close(deadline=time.monotonic() + CLOSE_TIMEOUT)
+            return
+        self._close_now()
+
+    def _wait_and_close(self, deadline):
+        if self.manager.is_busy() and time.monotonic() < deadline:
+            self.after(200, lambda: self._wait_and_close(deadline))
+            return
+        if self.manager.is_busy():
+            applog.warning("Завантаження не зупинилось за відведений час — закриваю як є")
+        self._close_now()
+
+    def _close_now(self):
         if self.state() == "normal":
             settings.set_many(geometry=self._logical_size())
         self.destroy()

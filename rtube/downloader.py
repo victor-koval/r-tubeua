@@ -10,12 +10,13 @@ import glob
 import itertools
 import os
 import queue
+import re
+import shutil
 import threading
 from dataclasses import dataclass, field
 
 import yt_dlp
-from yt_dlp.postprocessor.ffmpeg import FFmpegPostProcessor
-from yt_dlp.utils import DownloadCancelled, DownloadError, prepend_extension
+from yt_dlp.utils import DownloadCancelled, DownloadError, ISO639Utils
 
 from . import applog, formats, tools
 
@@ -55,46 +56,51 @@ def analyze(url):
         return ydl.sanitize_info(info)
 
 
-# ISO 639-2 — у mp4 мітка мови доріжки мусить бути трилітерною.
-ISO639_2 = {
-    "uk": "ukr", "en": "eng", "ru": "rus", "pl": "pol", "de": "ger", "fr": "fre",
-    "es": "spa", "it": "ita", "pt": "por", "ja": "jpn", "ko": "kor", "zh": "chi",
-    "ar": "ara", "hi": "hin", "id": "ind", "iw": "heb", "he": "heb", "nl": "dut",
-    "tr": "tur", "cs": "cze", "be": "bel", "kk": "kaz", "ro": "rum", "hu": "hun",
-    "bn": "ben", "ta": "tam", "te": "tel", "ml": "mal", "pa": "pan", "vi": "vie",
-}
+# Склеювання тимчасово тримає на диску і частини, і готовий файл.
+DISK_FACTOR = 2.1
 
 
-class TagAudioPP(FFmpegPostProcessor):
-    """Підписує аудіодоріжки мовою й назвою.
+def needed_bytes(part_sizes):
+    """Скільки місця треба під завантаження з частинами такого розміру."""
+    return int(sum(part_sizes) * DISK_FACTOR)
 
-    Склеєні yt-dlp доріжки лишаються з мовою «und», і плеєр показує
-    «Доріжка 1 / Доріжка 2» — не вгадаєш, де українська. Тут лише
-    переписуються метадані, без перекодування (-c copy), тож це секунди.
+
+def track_titles(info, fmt):
+    """[(код мови, назва), …] для аудіодоріжок рядка формату, у їхньому порядку."""
+    by_id = {f.get("format_id"): f for f in info.get("formats") or []}
+    choices = {a.lang: a for a in formats.build_choices(info).audios}
+    tracks = []
+    for fid in fmt.split("+"):
+        f = by_id.get(fid) or {}
+        if f.get("vcodec") not in (None, "none") and not formats.is_audio_only(f):
+            continue
+        lang = f.get("language") or ""
+        choice = choices.get(lang)
+        tracks.append((lang, choice.label if choice else formats.lang_name(lang)))
+    return tracks
+
+
+def track_metadata_args(info, fmt):
+    """Аргументи ffmpeg, що підписують аудіодоріжки мовою й назвою.
+
+    Без них склеєні доріжки мають мову «und», і плеєр показує «Доріжка 1 /
+    Доріжка 2». Передаються склеювачу yt-dlp (postprocessor_args), тож файл
+    не переписується вдруге. Склеювач кладе доріжки в порядку формату:
+    обрана — a:0, оригінал — a:1.
     """
-
-    def __init__(self, downloader, tracks):
-        super().__init__(downloader)
-        self.tracks = tracks        # [(код мови yt-dlp, назва), …] у порядку доріжок
-
-    def run(self, info):
-        path = info.get("filepath")
-        if not path or not self.tracks or info.get("ext") not in ("mp4", "mkv", "m4a"):
-            return [], info
-        opts = list(self.stream_copy_opts(ext=info.get("ext")))
-        for i, (lang, title) in enumerate(self.tracks):
-            code = ISO639_2.get(formats.base_lang(lang))
-            if code:
-                opts += [f"-metadata:s:a:{i}", f"language={code}"]
-            # mkv читає назву з title, mp4 — з handler_name.
-            opts += [f"-metadata:s:a:{i}", f"title={title}",
-                     f"-metadata:s:a:{i}", f"handler_name={title}"]
-            opts += [f"-disposition:a:{i}", "default" if i == 0 else "0"]
-        temp = prepend_extension(path, "temp")
-        self.to_screen(f'Підпис доріжок у "{path}"')
-        self.run_ffmpeg(path, temp, opts)
-        os.replace(temp, path)
-        return [], info
+    args = []
+    for i, (lang, title) in enumerate(track_titles(info, fmt)):
+        base = formats.base_lang(lang)
+        # short2long дивиться лише на дві перші літери: «fil» (філіппінська)
+        # перетворилася б на «fin» (фінська). Трилітерний код уже готовий.
+        code = base if len(base) == 3 else ISO639Utils.short2long(base) if base else None
+        if code:
+            args += [f"-metadata:s:a:{i}", f"language={code}"]
+        # mkv читає назву з title, mp4 — з handler_name.
+        args += [f"-metadata:s:a:{i}", f"title={title}",
+                 f"-metadata:s:a:{i}", f"handler_name={title}",
+                 f"-disposition:a:{i}", "default" if i == 0 else "0"]
+    return args
 
 
 @dataclass
@@ -142,12 +148,17 @@ class DownloadManager:
     def __init__(self):
         self.events = queue.Queue()
         self._jobs = queue.Queue()
+        self._running = None
         self._thread = threading.Thread(target=self._worker, daemon=True)
         self._thread.start()
 
     def submit(self, job):
         self._jobs.put(job)
         self._emit("state", job, "queued", "У черзі")
+
+    def is_busy(self):
+        """Чи качається щось просто зараз (для коректного закриття вікна)."""
+        return self._running is not None
 
     def cancel(self, job):
         job.cancel_event.set()
@@ -164,6 +175,7 @@ class DownloadManager:
             if job.cancel_event.is_set():
                 continue
             job.state = "running"
+            self._running = job
             self._emit("state", job, "running", "Підготовка…")
             try:
                 note = _Runner(job, self._emit).run()
@@ -176,6 +188,8 @@ class DownloadManager:
                 job.state = "error"
                 applog.error(f"Завантаження «{job.title}» ({job.url}) не вдалося", exc)
                 self._emit("state", job, "error", humanize_error(exc))
+            finally:
+                self._running = None
 
 
 class _Runner:
@@ -187,6 +201,7 @@ class _Runner:
         self.part_sizes = {}      # format_id → розмір у байтах
         self.done_bytes = {}      # format_id → скільки вже скачано
         self.temp_files = set()
+        self.created_files = set()  # готові файли, створені саме цим запуском
 
     # ── параметри yt-dlp ──
     def _opts(self, info, with_subs=True):
@@ -226,6 +241,10 @@ class _Runner:
             opts["merge_output_format"] = job.container
         if fmt.count("+") >= 2:
             opts["allow_multiple_audio_streams"] = True
+        if "+" in fmt and ffmpeg:
+            meta = track_metadata_args(info, fmt)
+            if meta:
+                opts["postprocessor_args"] = {"merger+ffmpeg_o": meta}
 
         if job.audio_only and job.container == "mp3":
             opts["postprocessors"].append({"key": "FFmpegExtractAudio",
@@ -250,9 +269,13 @@ class _Runner:
     def _progress(self, d):
         if self.job.cancel_event.is_set():
             raise Cancelled()
-        for key in ("tmpfilename", "filename"):
-            if d.get(key):
-                self.temp_files.add(d[key])
+        # Лише те, що справді пишемо зараз: «finished» без «downloading»
+        # приходить і для файлу, скачаного колись раніше, — його при
+        # скасуванні чіпати не можна.
+        if d.get("status") == "downloading":
+            for key in ("tmpfilename", "filename"):
+                if d.get(key):
+                    self.temp_files.add(d[key])
         info = d.get("info_dict") or {}
         fid = info.get("format_id")
         if d.get("status") == "finished":
@@ -294,16 +317,24 @@ class _Runner:
         self.emit("progress", self.job, fraction, "  ·  ".join(bits))
 
     def _postprocess(self, d):
-        if d.get("status") != "started":
-            if d.get("status") == "finished" and (d.get("info_dict") or {}).get("filepath"):
-                self.job.filepath = d["info_dict"]["filepath"]
+        path = (d.get("info_dict") or {}).get("filepath")
+        if d.get("status") == "finished":
+            if path:
+                self.job.filepath = path
+                if d.get("postprocessor") in ("Merger", "ExtractAudio"):
+                    self.created_files.add(path)
             return
+        if d.get("status") != "started":
+            return
+        # Між етапами ffmpeg хук прогресу мовчить, тож скасування
+        # перевіряємо й тут — інакше кнопка не діяла б, поки йде склеювання.
+        if self.job.cancel_event.is_set():
+            raise Cancelled()
         # Назви — pp_key(): ім'я класу без «FFmpeg» і «PP».
         names = {
             "Merger": "Склеювання відео й звуку…",
             "EmbedSubtitle": "Вбудовування субтитрів…",
             "ExtractAudio": "Конвертація в MP3…",
-            "TagAudio": "Підпис доріжок…",
         }
         text = names.get(d.get("postprocessor"))
         if text:
@@ -348,39 +379,42 @@ class _Runner:
 
     def _download(self, info, with_subs):
         opts = self._opts(info, with_subs)
+        self._check_disk_space()
         applog.info(f"Завантаження {self.job.url}: format={opts['format']}, "
                     f"контейнер={self.job.container}, субтитри={self.job.sub_key if with_subs else '—'}")
         with yt_dlp.YoutubeDL(opts) as ydl:
-            tracks = self._track_titles(info, opts["format"])
-            if tracks and opts.get("ffmpeg_location") and not self.job.audio_only:
-                ydl.add_post_processor(TagAudioPP(ydl, tracks), when="post_process")
             # Як --load-info-json: info з аналізу вже містить розшифровані
             # посилання, тож YouTube вдруге не питаємо, а ID на кшталт
             # 140-19 гарантовано відповідають тим самим доріжкам.
             return ydl.process_ie_result(ydl.sanitize_info(copy.deepcopy(info), True),
                                          download=True)
 
-    @staticmethod
-    def _track_titles(info, fmt):
-        by_id = {f.get("format_id"): f for f in info.get("formats") or []}
-        choices = {a.lang: a for a in formats.build_choices(info).audios}
-        tracks = []
-        for fid in fmt.split("+"):
-            f = by_id.get(fid) or {}
-            if f.get("vcodec") not in (None, "none") and not formats.is_audio_only(f):
-                continue
-            lang = f.get("language") or ""
-            choice = choices.get(lang)
-            tracks.append((lang, choice.label if choice else formats.lang_name(lang)))
-        return tracks
+    def _check_disk_space(self):
+        need = needed_bytes(self.part_sizes.values())
+        if not need:
+            return      # розміри невідомі (буває в HLS) — не вгадуємо
+        try:
+            free = shutil.disk_usage(self.job.out_dir).free
+        except OSError:
+            return
+        if free < need:
+            raise DownloadError(f"Не вистачає місця на диску: потрібно ~{formats.format_size(need)}, "
+                                f"вільно {formats.format_size(free)}")
 
     def _cleanup(self):
-        """Прибирає .part і проміжні .fNNN-файли скасованого завантаження."""
+        """Прибирає все, що лишив скасований запуск: .part, проміжні .fNNN,
+        тимчасовий файл склеювання і вже склеєний, але не доведений до кінця файл."""
+        candidates = set(self.created_files)
         for path in self.temp_files:
             stem = os.path.splitext(path)[0]
-            for candidate in {path, path + ".part", path + ".ytdl",
-                              *glob.glob(glob.escape(stem) + "*.part"),
-                              *glob.glob(glob.escape(stem) + "*.ytdl")}:
+            # «Назва [uk].f137.mp4» → «Назва [uk]»: від неї названо .temp-файл склеювання.
+            title = os.path.splitext(stem)[0] if re.search(r"\.f[\w-]+$", stem) else stem
+            candidates |= {path, path + ".part", path + ".ytdl",
+                           *glob.glob(glob.escape(stem) + "*.part"),
+                           *glob.glob(glob.escape(stem) + "*.part-Frag*"),
+                           *glob.glob(glob.escape(stem) + "*.ytdl"),
+                           *glob.glob(glob.escape(title) + ".temp.*")}
+        for candidate in candidates:
                 try:
                     if os.path.isfile(candidate):
                         os.remove(candidate)

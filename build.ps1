@@ -114,6 +114,8 @@ Write-Host "Збірка R-TubeUA $target…" -ForegroundColor Cyan
 # --collect-all yt_dlp_ejs: JS-скрипти розв'язувача лежать у пакеті як дані,
 # і без цього ключа PyInstaller їх не бере — тоді у зібраному .exe зникли б
 # усі дубльовані доріжки, хоча з .venv усе працювало б.
+# --copy-metadata: з них програма знає версію вшитого yt-dlp і не підключає
+# старіший з %APPDATA% після перезбірки зі свіжим (див. rtube/ytupdate.py).
 & $python -m PyInstaller `
     --onefile `
     --windowed `
@@ -125,6 +127,8 @@ Write-Host "Збірка R-TubeUA $target…" -ForegroundColor Cyan
     --add-data "$root\assets\rozetka_theme.json;assets" `
     --collect-all customtkinter `
     --collect-all yt_dlp_ejs `
+    --copy-metadata yt-dlp `
+    --copy-metadata yt-dlp-ejs `
     --hidden-import truststore `
     --exclude-module pytest `
     --exclude-module numpy `
