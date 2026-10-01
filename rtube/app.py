@@ -14,7 +14,7 @@ from . import applog, downloader, formats, settings, tools, uikit, ytupdate
 from .uikit import FONT_SMALL, FONT_UI, FONT_UI_BOLD, GREEN, GREEN_HOVER
 
 APP_TITLE = "R-TubeUA"
-APP_VERSION = "1.0.0"
+APP_VERSION = "1.0.1"
 
 DEFAULT_SIZE = (1000, 800)
 MIN_SIZE = (880, 660)
