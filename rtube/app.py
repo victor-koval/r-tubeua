@@ -357,11 +357,11 @@ class RTubeApp(ctk.CTk):
         try:
             import yt_dlp.version
             ffmpeg = tools.find_ffmpeg()
-            runtimes = tools.find_js_runtimes()
+            runtimes = tools.probe_js_runtimes()
             self.ui_events.put(("env", yt_dlp.version.__version__, ffmpeg, runtimes))
         except Exception as exc:
             applog.error("Перевірка оточення не вдалася", exc)
-            self.ui_events.put(("env", "?", None, {}))
+            self.ui_events.put(("env", "?", None, []))
 
     def _install_ffmpeg(self):
         if ffinstall.start():
@@ -390,8 +390,15 @@ class RTubeApp(ctk.CTk):
     def _show_environment(self, version, ffmpeg, runtimes):
         if ytupdate.state["source"] == "lib":
             version += " (оновлено)"
+        usable = [r for r in runtimes if r[3]]
+        outdated = [r for r in runtimes if not r[3]]
         parts = [f"yt-dlp {version}", "ffmpeg ✓" if ffmpeg else "ffmpeg ✗"]
-        parts.append(f"JS: {', '.join(runtimes)} ✓" if runtimes else "JS ✗")
+        if usable:
+            parts.append("JS: " + ", ".join(f"{n} {v}" for n, _p, v, _ok in usable) + " ✓")
+        elif outdated:
+            parts.append("JS: " + ", ".join(f"{n} {v or '?'}" for n, _p, v, _ok in outdated) + " ✗")
+        else:
+            parts.append("JS ✗")
         text = "  ·  ".join(parts)
         color = uikit.TEXT_MUTED
         if ffmpeg:
@@ -404,10 +411,15 @@ class RTubeApp(ctk.CTk):
             self.btn_ffmpeg.configure(text=f"Встановити ffmpeg (~{ffinstall.APPROX_SIZE_MB} МБ)",
                                       width=180)
             self.btn_ffmpeg.grid(row=0, column=3, padx=(8, 0))
-        if ffmpeg and not runtimes:
-            text += ("   —   без Node.js або Deno YouTube віддає лише оригінальну доріжку: "
+        # Без JS-рантайму yt-dlp поки що обходиться іншим клієнтом YouTube і
+        # дубляжі отримує (перевірено 02.10.2026 — ті самі 65 форматів), але
+        # сам називає цей шлях застарілим. Тож це порада про запас, а не тривога.
+        if ffmpeg and not usable and outdated:
+            text += ("   —   Node.js застарий (бажано ≥ 22, на випадок змін YouTube): "
+                     "winget upgrade OpenJS.NodeJS.LTS")
+        elif ffmpeg and not usable:
+            text += ("   —   бажано Node.js ≥ 22, на випадок змін YouTube: "
                      "winget install OpenJS.NodeJS.LTS")
-            color = uikit.STATE_WARN
         self.lbl_status.configure(text=text, text_color=color)
         applog.info(f"Оточення: {text}; ffmpeg={ffmpeg}; js={runtimes}")
 

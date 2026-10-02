@@ -212,14 +212,19 @@ def build_choices(info, max_height=1080, preferred_lang="uk"):
     # ── звук ──
     agroups = _audio_groups(info)
     audios = []
+    single = len(agroups) == 1
     for lang, fmts in agroups.items():
-        is_orig, kind = _audio_kind(fmts)
+        if single:
+            # Єдина доріжка — це і є оригінал, хоч YouTube й не ставить їй
+            # позначку «original». Мову вказує автор, і вона буває хибною
+            # (україномовний ролик із «English»), тож «дубляжем» її не звемо.
+            is_orig, kind = True, "єдина доріжка"
+        else:
+            is_orig, kind = _audio_kind(fmts)
         label = lang_name(lang) if lang else "Основна доріжка"
         if kind:
             label += f" — {kind}"
         audios.append(AudioChoice(lang, label, is_orig, kind))
-    if len(audios) == 1:
-        audios[0].is_original = True
     pref = base_lang(preferred_lang)
     audios.sort(key=lambda a: (base_lang(a.lang) != pref, not a.is_original, sort_key(a.label)))
     choices.audios = audios

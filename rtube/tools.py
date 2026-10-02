@@ -1,5 +1,6 @@
 """Зовнішні програми й дрібні утиліти: ffmpeg, JS-рантайм, чистка посилань."""
 
+import functools
 import glob
 import os
 import re
@@ -90,15 +91,43 @@ def find_ffmpeg():
 def find_js_runtimes():
     """JS-рантайми для yt-dlp у форматі параметра js_runtimes.
 
-    Без жодного з них YouTube віддає лише оригінальну доріжку: усі
-    дубляжі (зокрема ШІ-озвучка українською) приходять через web-клієнт,
-    якому yt-dlp мусить розв'язати JS-челендж. Типово yt-dlp шукає тільки
-    deno, тому node, який зазвичай уже стоїть, треба вказати явно.
+    Дубляжі (зокрема ШІ-озвучка українською) надійно приходять через
+    web-клієнт, якому yt-dlp мусить розв'язати JS-челендж. Без рантайму
+    yt-dlp 2026.08 поки що бере їх через інший клієнт, але сам називає цей
+    шлях застарілим. Типово yt-dlp шукає тільки deno, тому node, який
+    зазвичай уже стоїть, треба вказати явно.
+
+    Застарілі версії (node < 22 тощо) не передаємо: yt-dlp їх однаково
+    відкине, а нам важливо чесно показати це в рядку статусу.
     """
-    runtimes = {}
-    for name in ("deno", "node", "bun", "qjs"):
-        local = os.path.join(_app_dir(), name + ".exe")
-        path = local if os.path.isfile(local) else shutil.which(name)
+    return {name: {"path": path} for name, path, _version, ok in probe_js_runtimes() if ok}
+
+
+def _runtime_paths():
+    found = []
+    for exe in ("deno", "node", "bun", "qjs"):
+        local = os.path.join(_app_dir(), exe + ".exe")
+        path = local if os.path.isfile(local) else shutil.which(exe)
         if path:
-            runtimes["quickjs" if name == "qjs" else name] = {"path": path}
-    return runtimes
+            found.append(("quickjs" if exe == "qjs" else exe, path))
+    return found
+
+
+@functools.lru_cache(maxsize=None)
+def _runtime_info(name, path):
+    """(версія, чи підходить) — за правилами самого yt-dlp (мінімальні
+    версії живуть у ньому, а не тут). Кешуємо: це запуск «node --version»."""
+    try:
+        import yt_dlp  # noqa: F401  — реєструє класи рантаймів
+        from yt_dlp.globals import supported_js_runtimes
+        info = supported_js_runtimes.value[name](path).info
+    except Exception:
+        return "?", True        # не вдалося перевірити — довіряємо, хай вирішує yt-dlp
+    if info is None:
+        return None, False      # файл є, але не запускається
+    return info.version, bool(info.supported)
+
+
+def probe_js_runtimes():
+    """[(назва, шлях, версія, чи підходить)] для всіх знайдених JS-рантаймів."""
+    return [(name, path, *_runtime_info(name, path)) for name, path in _runtime_paths()]

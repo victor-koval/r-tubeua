@@ -43,6 +43,19 @@ class ChoicesTest(unittest.TestCase):
         originals = [a for a in self.choices.audios if a.is_original]
         self.assertEqual([a.lang for a in originals], ["en-US"])
 
+    def test_single_track_not_called_dub(self):
+        # Як у «Килимок для миши "Морський"» (pn6mZ0Bcugo): одна доріжка «en»
+        # з language_preference = -1 і без позначки original.
+        info = copy.deepcopy(INFO)
+        info["formats"] = [f for f in info["formats"]
+                           if not formats.is_audio_only(f) or f["format_id"] in ("140-20", "251-20")]
+        for f in info["formats"]:
+            if formats.is_audio_only(f):
+                f.update(language="en", language_preference=-1, format_note="medium")
+        c = formats.build_choices(info)
+        self.assertEqual([(a.label, a.is_original) for a in c.audios],
+                         [("Англійська — єдина доріжка", True)])
+
     def test_default_quality_1080_h264(self):
         self.assertEqual(self.choices.videos[self.choices.default_video].key, (1080, 30, "H.264"))
 
