@@ -18,7 +18,7 @@ from dataclasses import dataclass, field
 import yt_dlp
 from yt_dlp.utils import DownloadCancelled, DownloadError, ISO639Utils
 
-from . import applog, formats, tools
+from . import applog, ffinstall, formats, tools
 
 _job_ids = itertools.count(1)
 
@@ -101,6 +101,17 @@ def track_metadata_args(info, fmt):
                  f"-metadata:s:a:{i}", f"handler_name={title}",
                  f"-disposition:a:{i}", "default" if i == 0 else "0"]
     return args
+
+
+def needs_ffmpeg(job, progressive=False):
+    """Чи знадобиться ffmpeg: склеювання, mp3 або субтитри.
+
+    Без нього обходяться лише «лише звук» у m4a без субтитрів і формати,
+    де відео й звук в одному файлі (progressive).
+    """
+    if job.audio_only:
+        return job.container == "mp3"
+    return not progressive or bool(job.sub_key)
 
 
 @dataclass
@@ -214,9 +225,17 @@ class _Runner:
         ffmpeg = tools.find_ffmpeg()
         needs_ffmpeg = "+" in fmt or (job.audio_only and job.container == "mp3") or \
             (with_subs and job.sub_key)
+        if needs_ffmpeg and not ffmpeg and ffinstall.in_progress():
+            # Користувач погодився поставити ffmpeg, коли додавав відео, —
+            # чекаємо, поки він доставиться, замість одразу падати.
+            self.emit("progress", job, None, "Чекаю, поки встановиться ffmpeg…")
+            while not ffinstall.wait(0.5):
+                if job.cancel_event.is_set():
+                    raise Cancelled()
+            ffmpeg = tools.find_ffmpeg()
         if needs_ffmpeg and not ffmpeg:
-            raise DownloadError("Не знайдено ffmpeg — без нього не склеїти відео зі звуком. "
-                                "Встановіть: winget install Gyan.FFmpeg")
+            raise DownloadError("Немає ffmpeg — без нього не склеїти відео зі звуком. "
+                                "Натисніть «Встановити ffmpeg» унизу вікна, тоді «Повторити»")
 
         self.part_sizes = {}
         for fid in fmt.split("+"):

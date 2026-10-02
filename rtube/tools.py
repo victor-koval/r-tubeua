@@ -7,6 +7,11 @@ import shutil
 import sys
 from urllib.parse import parse_qs, urlparse
 
+from .settings import CONFIG_DIR
+
+# Куди ffmpeg ставить сама програма (див. ffinstall.py).
+FFMPEG_DIR = os.path.join(CONFIG_DIR, "bin")
+
 _VIDEO_ID = re.compile(r"^[A-Za-z0-9_-]{11}$")
 _YT_HOSTS = ("youtube.com", "youtu.be", "youtube-nocookie.com")
 
@@ -57,13 +62,14 @@ def find_ffmpeg():
     """Шлях до ffmpeg.exe або None.
 
     Без ffmpeg yt-dlp не зможе склеїти відео з окремою доріжкою — а саме так
-    YouTube віддає все вище 360p. Шукаємо: поруч із програмою, у PATH, у
-    теці пакета winget (його PATH підхоплюється не всюди, доки не
-    перезайти в систему).
+    YouTube віддає все вище 360p. Шукаємо: поруч із програмою, там, куди його
+    ставить сама програма (ffinstall.py), у PATH, у теці пакета winget (його
+    PATH підхоплюється не всюди, доки не перезайти в систему), у Scoop і
+    Chocolatey.
     """
-    local = os.path.join(_app_dir(), "ffmpeg.exe")
-    if os.path.isfile(local):
-        return local
+    for local in (os.path.join(_app_dir(), "ffmpeg.exe"), os.path.join(FFMPEG_DIR, "ffmpeg.exe")):
+        if os.path.isfile(local):
+            return local
     found = shutil.which("ffmpeg")
     if found:
         return found
@@ -72,7 +78,10 @@ def find_ffmpeg():
         hits = sorted(glob.glob(os.path.join(winget, pattern), recursive=True), reverse=True)
         if hits:
             return hits[0]
-    for path in (r"C:\ffmpeg\bin\ffmpeg.exe", r"C:\Program Files\ffmpeg\bin\ffmpeg.exe"):
+    for path in (os.path.join(os.path.expanduser("~"), "scoop", "shims", "ffmpeg.exe"),
+                 os.path.join(os.environ.get("ProgramData", r"C:\ProgramData"),
+                              "chocolatey", "bin", "ffmpeg.exe"),
+                 r"C:\ffmpeg\bin\ffmpeg.exe", r"C:\Program Files\ffmpeg\bin\ffmpeg.exe"):
         if os.path.isfile(path):
             return path
     return None

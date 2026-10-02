@@ -10,7 +10,7 @@ from tkinter import filedialog, messagebox
 
 import customtkinter as ctk
 
-from . import applog, downloader, formats, settings, tools, uikit, ytupdate
+from . import applog, downloader, ffinstall, formats, settings, tools, uikit, ytupdate
 from .uikit import FONT_SMALL, FONT_UI, FONT_UI_BOLD, GREEN, GREEN_HOVER
 
 APP_TITLE = "R-TubeUA"
@@ -338,17 +338,13 @@ class RTubeApp(ctk.CTk):
         self.lbl_update.grid(row=0, column=1, sticky="e", padx=(8, 0))
         self.btn_restart = ctk.CTkButton(bar, text="Перезапустити", width=110, height=24,
                                          font=FONT_SMALL, command=self._restart)
+        self.btn_ffmpeg = ctk.CTkButton(bar, text="Встановити ffmpeg", width=140, height=24,
+                                        font=FONT_SMALL, command=self._install_ffmpeg)
+        self._ffmpeg_was_running = False
 
     # ── оточення ──────────────────────────────────────────────────────────
     def _check_environment(self):
-        try:
-            import yt_dlp.version
-            ffmpeg = tools.find_ffmpeg()
-            runtimes = tools.find_js_runtimes()
-            self.ui_events.put(("env", yt_dlp.version.__version__, ffmpeg, runtimes))
-        except Exception as exc:
-            applog.error("Перевірка оточення не вдалася", exc)
-            self.ui_events.put(("env", "?", None, {}))
+        self._send_environment()
         # Свіжий yt-dlp — після перевірки оточення, щоб не гальмувати старт.
         try:
             installed = ytupdate.check_and_install()
@@ -357,6 +353,40 @@ class RTubeApp(ctk.CTk):
         except Exception as exc:
             applog.error("Оновлення yt-dlp не вдалося — працюю на поточному", exc)
 
+    def _send_environment(self):
+        try:
+            import yt_dlp.version
+            ffmpeg = tools.find_ffmpeg()
+            runtimes = tools.find_js_runtimes()
+            self.ui_events.put(("env", yt_dlp.version.__version__, ffmpeg, runtimes))
+        except Exception as exc:
+            applog.error("Перевірка оточення не вдалася", exc)
+            self.ui_events.put(("env", "?", None, {}))
+
+    def _install_ffmpeg(self):
+        if ffinstall.start():
+            applog.info("Встановлення ffmpeg розпочато")
+        self.btn_ffmpeg.grid_remove()
+        self._ffmpeg_was_running = True
+
+    def _track_ffmpeg_install(self):
+        """Прогрес встановлення ffmpeg — у рядку статусу; по завершенні —
+        повторна перевірка оточення, щоб «ffmpeg ✗» змінився на «✓»."""
+        st = ffinstall.status()
+        if st["running"]:
+            self._ffmpeg_was_running = True
+            pct = f" ({st['fraction'] * 100:.0f}%)" if st["fraction"] else ""
+            self.lbl_status.configure(text=st["text"] + pct, text_color=uikit.STATE_INFO)
+        elif self._ffmpeg_was_running:
+            self._ffmpeg_was_running = False
+            if st["error"]:
+                self.lbl_status.configure(text=f"ffmpeg не встановився: {st['error']}"[:220],
+                                          text_color=uikit.STATE_ERROR)
+                self.btn_ffmpeg.configure(text="Спробувати ще раз")
+                self.btn_ffmpeg.grid(row=0, column=3, padx=(8, 0))
+            else:
+                threading.Thread(target=self._send_environment, daemon=True).start()
+
     def _show_environment(self, version, ffmpeg, runtimes):
         if ytupdate.state["source"] == "lib":
             version += " (оновлено)"
@@ -364,10 +394,17 @@ class RTubeApp(ctk.CTk):
         parts.append(f"JS: {', '.join(runtimes)} ✓" if runtimes else "JS ✗")
         text = "  ·  ".join(parts)
         color = uikit.TEXT_MUTED
-        if not ffmpeg:
-            text += "   —   без ffmpeg не склеїти відео зі звуком: winget install Gyan.FFmpeg"
+        if ffmpeg:
+            self.btn_ffmpeg.grid_remove()
+        elif ffinstall.in_progress():
+            return      # рядок зараз показує прогрес встановлення
+        else:
+            text += "   —   без ffmpeg не склеїти відео зі звуком"
             color = uikit.STATE_ERROR
-        elif not runtimes:
+            self.btn_ffmpeg.configure(text=f"Встановити ffmpeg (~{ffinstall.APPROX_SIZE_MB} МБ)",
+                                      width=180)
+            self.btn_ffmpeg.grid(row=0, column=3, padx=(8, 0))
+        if ffmpeg and not runtimes:
             text += ("   —   без Node.js або Deno YouTube віддає лише оригінальну доріжку: "
                      "winget install OpenJS.NodeJS.LTS")
             color = uikit.STATE_WARN
@@ -548,6 +585,16 @@ class RTubeApp(ctk.CTk):
             sub_key=sub.key if sub and not audio_only else (),
             subs_mode="file" if self.subs_mode.get() == SUBS_FILE else "embed")
 
+        if downloader.needs_ffmpeg(job, progressive=video.has_audio) and \
+                not tools.find_ffmpeg() and not ffinstall.in_progress():
+            if not messagebox.askyesno(
+                    APP_TITLE,
+                    "Щоб склеїти відео зі звуком, потрібен ffmpeg, а на цьому комп'ютері "
+                    f"його немає.\n\nЗавантажити його зараз (~{ffinstall.APPROX_SIZE_MB} МБ, "
+                    "один раз)? Відео почне качатися одразу після цього.", parent=self):
+                return
+            self._install_ffmpeg()
+
         remember = {"download_dir": out_dir, "keep_original": bool(self.keep_original_var.get()),
                     "subs_mode": job.subs_mode}
         if audio_only:
@@ -618,6 +665,7 @@ class RTubeApp(ctk.CTk):
             self.after(100, self._poll)
 
     def _drain_events(self):
+        self._track_ffmpeg_install()
         try:
             while True:
                 event = self.ui_events.get_nowait()
