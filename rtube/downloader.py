@@ -12,6 +12,7 @@ import os
 import queue
 import re
 import shutil
+import subprocess
 import threading
 from dataclasses import dataclass, field
 
@@ -101,6 +102,50 @@ def track_metadata_args(info, fmt):
                  f"-metadata:s:a:{i}", f"handler_name={title}",
                  f"-disposition:a:{i}", "default" if i == 0 else "0"]
     return args
+
+
+ALREADY_NOTE = "Уже є в теці — не качав вдруге"
+
+
+class AlreadyHave(Exception):
+    """Файл тієї ж якості вже лежить у теці — качати нічого не треба."""
+
+    def __init__(self, path):
+        super().__init__(path)
+        self.path = path
+
+
+def quality_tag(video_key):
+    """(720, 30, …) → «720p», (1080, 60, …) → «1080p60» — як у списку якостей."""
+    height, fps = video_key[0], video_key[1] if len(video_key) > 1 else 30
+    return f"{height}p" + ("60" if fps == 60 else "")
+
+
+def final_ext(info, fmt, job):
+    """Розширення готового файлу: після склеювання — контейнер, після
+    конвертації — mp3, інакше — розширення самого формату."""
+    if job.audio_only and job.container == "mp3":
+        return "mp3"
+    if "+" in fmt:
+        return job.container
+    f = next((x for x in info.get("formats") or [] if x.get("format_id") == fmt), {})
+    return f.get("ext") or job.container
+
+
+def probe_height(path):
+    """Висота відео у файлі через ffprobe; None — якщо дізнатися не вдалося."""
+    ffprobe = tools.find_ffprobe()
+    if not ffprobe:
+        return None
+    try:
+        out = subprocess.run(
+            [ffprobe, "-v", "error", "-select_streams", "v:0", "-show_entries",
+             "stream=height", "-of", "csv=p=0", path],
+            capture_output=True, text=True, timeout=20,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0)).stdout.strip()
+        return int(out.splitlines()[0]) if out else None
+    except Exception:
+        return None
 
 
 def needs_ffmpeg(job, progressive=False):
@@ -215,7 +260,7 @@ class _Runner:
         self.created_files = set()  # готові файли, створені саме цим запуском
 
     # ── параметри yt-dlp ──
-    def _opts(self, info, with_subs=True):
+    def _opts(self, info, with_subs=True, quality_in_name=False):
         job = self.job
         fmt = formats.resolve_format(info, job.video_key, job.audio_lang, job.container,
                                      job.keep_original, audio_ext=job.container)
@@ -246,6 +291,8 @@ class _Runner:
         orig = formats.original_lang(info)
         if job.audio_lang and orig is not None and job.audio_lang != orig:
             name += f" [{formats.base_lang(job.audio_lang)}]"
+        if quality_in_name and not job.audio_only:
+            name += f" [{quality_tag(job.video_key)}]"
         opts = base_opts()
         opts.update({
             "format": fmt,
@@ -366,6 +413,9 @@ class _Runner:
         note = ""
         try:
             info = self._download(job.info, with_subs=True)
+        except AlreadyHave as have:
+            job.filepath = have.path
+            return ALREADY_NOTE
         except Cancelled:
             self._cleanup()
             raise
@@ -398,6 +448,20 @@ class _Runner:
 
     def _download(self, info, with_subs):
         opts = self._opts(info, with_subs)
+        existing = self._existing_target(info, opts)
+        if existing:
+            # yt-dlp, побачивши файл із таким іменем, мовчки пропустив би
+            # завантаження — і на запит 720p лишився б старий 1080p під
+            # «Готово». Тож вирішуємо самі: та сама якість — нічого не качаємо,
+            # інша — новий файл із якістю в імені.
+            if self._same_quality(existing):
+                applog.info(f"Уже є: {existing} — не качаю вдруге")
+                raise AlreadyHave(existing)
+            opts = self._opts(info, with_subs, quality_in_name=True)
+            existing = self._existing_target(info, opts)
+            if existing:
+                applog.info(f"Уже є: {existing} — не качаю вдруге")
+                raise AlreadyHave(existing)
         self._check_disk_space()
         applog.info(f"Завантаження {self.job.url}: format={opts['format']}, "
                     f"контейнер={self.job.container}, субтитри={self.job.sub_key if with_subs else '—'}")
@@ -407,6 +471,25 @@ class _Runner:
             # 140-19 гарантовано відповідають тим самим доріжкам.
             return ydl.process_ie_result(ydl.sanitize_info(copy.deepcopy(info), True),
                                          download=True)
+
+    def _existing_target(self, info, opts):
+        """Шлях готового файлу, якщо він уже лежить у теці, інакше None.
+
+        Ім'я будує сам yt-dlp (prepare_filename) з тими ж outtmpl і
+        windowsfilenames — інакше не збіглися б заміни на кшталт " → ＂.
+        """
+        ext = final_ext(info, opts["format"], self.job)
+        params = {"outtmpl": opts["outtmpl"], "windowsfilenames": True, "quiet": True,
+                  "logger": applog.YtdlpLogger()}
+        with yt_dlp.YoutubeDL(params) as ydl:
+            path = ydl.prepare_filename({**info, "ext": ext})
+        return path if os.path.isfile(path) else None
+
+    def _same_quality(self, path):
+        """Чи наявний файл тієї якості, яку просять зараз."""
+        if self.job.audio_only:
+            return True     # ім'я й розширення ті самі — це той самий звук
+        return probe_height(path) == self.job.video_key[0]
 
     def _check_disk_space(self):
         need = needed_bytes(self.part_sizes.values())

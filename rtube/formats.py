@@ -275,16 +275,17 @@ def default_sub_index(subs, audios, audio_index, preferred_lang="uk"):
     """Субтитри потрібні, лише якщо української доріжки немає.
 
     Є українська озвучка — субтитри за замовчуванням вимкнені. Немає —
-    беремо українські субтитри: спершу від автора, потім автопереклад.
+    беремо українські субтитри від автора. Автопереклад YouTube сам не
+    вмикаємо: зараз він здебільшого відповідає 429 (перевірено 02.10.2026 —
+    не допомагають ні повтори з паузою, ні curl_cffi), і користувач
+    отримував «Готово, але без субтитрів». Обрати його можна вручну.
     """
     pref = base_lang(preferred_lang)
     if audios and base_lang(audios[audio_index].lang) == pref:
         return 0
-    for auto in (False, True):
-        for i, s in enumerate(subs):
-            if s.key and s.key[1] is auto and base_lang(s.key[0]) == pref \
-                    and not s.key[0].endswith("-orig"):
-                return i
+    for i, s in enumerate(subs):
+        if s.key and not s.key[1] and base_lang(s.key[0]) == pref:
+            return i
     return 0
 
 

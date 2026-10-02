@@ -99,7 +99,9 @@ class JobRow(ctk.CTkFrame):
             self.bar.set(1 if state == "done" else 0)
             self.btn_cancel.pack_forget()
         if state == "done":
-            if "без субтитрів" in text:
+            # «Готово», яке не зовсім «готово», — жовтим: інакше пропущене
+            # завантаження виглядало як дуже швидке (так і сталося в колеги).
+            if "без субтитрів" in text or text == downloader.ALREADY_NOTE:
                 self.lbl_status.configure(text_color=uikit.STATE_WARN)
             if self.job.filepath:
                 self.lbl_status.configure(text=f"{text}  ·  {os.path.basename(self.job.filepath)}")
@@ -509,7 +511,11 @@ class RTubeApp(ctk.CTk):
                                           text_color=uikit.STATE_OK)
         elif choices.default_sub:
             self.lbl_audio_hint.configure(text="Української доріжки немає — увімкнено "
-                                               "українські субтитри",
+                                               "українські субтитри від автора",
+                                          text_color=uikit.STATE_WARN)
+        elif any(s.key and formats.base_lang(s.key[0]) == "uk" for s in choices.subs):
+            self.lbl_audio_hint.configure(text="Української доріжки немає — автопереклад "
+                                               "субтитрів можна обрати вручну",
                                           text_color=uikit.STATE_WARN)
         else:
             self.lbl_audio_hint.configure(text="Української доріжки й субтитрів немає",

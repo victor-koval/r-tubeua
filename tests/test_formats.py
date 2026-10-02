@@ -66,12 +66,21 @@ class ChoicesTest(unittest.TestCase):
     def test_no_subs_when_ukrainian_audio(self):
         self.assertEqual(self.choices.subs[self.choices.default_sub].key, ())
 
-    def test_ukrainian_subs_when_no_ukrainian_audio(self):
+    def test_auto_translation_not_default_but_offered(self):
+        # Автопереклад YouTube зараз здебільшого віддає 429 — сам не вмикається.
         info = copy.deepcopy(INFO)
         info["formats"] = [f for f in info["formats"] if f.get("language") != "uk"]
         c = formats.build_choices(info)
         self.assertEqual(c.audios[c.default_audio].lang, "en-US")
-        self.assertEqual(c.subs[c.default_sub].key, ("uk", True))
+        self.assertEqual(c.subs[c.default_sub].key, ())
+        self.assertIn(("uk", True), [s.key for s in c.subs])
+
+    def test_author_ukrainian_subs_default_when_no_ukrainian_audio(self):
+        info = copy.deepcopy(INFO)
+        info["formats"] = [f for f in info["formats"] if f.get("language") != "uk"]
+        info["subtitles"] = {"uk": [{"ext": "vtt"}]}
+        c = formats.build_choices(info)
+        self.assertEqual(c.subs[c.default_sub].key, ("uk", False))
 
     def test_only_real_original_orig_subs(self):
         orig = [s.key[0] for s in self.choices.subs if s.key and s.key[0].endswith("-orig")]

@@ -88,6 +88,16 @@ def find_ffmpeg():
     return None
 
 
+def find_ffprobe():
+    """ffprobe лежить поруч із ffmpeg у всіх збірках, які ми знаходимо або ставимо."""
+    ffmpeg = find_ffmpeg()
+    if ffmpeg:
+        sibling = os.path.join(os.path.dirname(ffmpeg), "ffprobe.exe")
+        if os.path.isfile(sibling):
+            return sibling
+    return shutil.which("ffprobe")
+
+
 def find_js_runtimes():
     """JS-рантайми для yt-dlp у форматі параметра js_runtimes.
 
