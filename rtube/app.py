@@ -44,6 +44,12 @@ def _unique(labels):
     return out
 
 
+def job_duration(job):
+    """Тривалість ролика в секундах або None (ще не проаналізовано, пряма трансляція)."""
+    duration = (job.info or {}).get("duration")
+    return duration if isinstance(duration, (int, float)) and duration > 0 else None
+
+
 class JobRow(ctk.CTkFrame):
     """Рядок у списку завантажень: назва, параметри, прогрес, дії."""
 
@@ -57,9 +63,15 @@ class JobRow(ctk.CTkFrame):
         self.lbl_title = ctk.CTkLabel(self, text=job.title, font=FONT_UI_BOLD, anchor="w",
                                       justify="left")
         self.lbl_title.grid(row=0, column=0, sticky="ew", padx=(12, 8), pady=(8, 0))
-        self.lbl_summary = ctk.CTkLabel(self, text=job.summary(), font=FONT_SMALL, anchor="w",
+        meta = ctk.CTkFrame(self, fg_color="transparent")
+        meta.grid(row=1, column=0, sticky="ew", padx=(12, 8))
+        self.lbl_summary = ctk.CTkLabel(meta, text=job.summary(), font=FONT_SMALL, anchor="w",
                                         text_color=uikit.TEXT_MUTED)
-        self.lbl_summary.grid(row=1, column=0, sticky="ew", padx=(12, 8))
+        self.lbl_summary.pack(side="left")
+        # Тривалість — клік копіює «3,27» (хвилин,секунд).
+        self.lbl_duration = uikit.CopyLabel(meta, font=FONT_SMALL, text_color=uikit.STATE_INFO)
+        self.lbl_duration.pack(side="left", padx=(10, 0))
+        self.refresh_duration()
         self.bar = ctk.CTkProgressBar(self, height=8, progress_color=GREEN)
         self.bar.set(0)
         self.bar.grid(row=2, column=0, sticky="ew", padx=(12, 8), pady=(6, 2))
@@ -86,6 +98,16 @@ class JobRow(ctk.CTkFrame):
         """Після відкладеного аналізу: справжня назва й обрана якість/доріжка."""
         self.lbl_title.configure(text=title)
         self.lbl_summary.configure(text=summary)
+        self.refresh_duration()
+
+    def refresh_duration(self):
+        """Тривалість відома лише після аналізу (для пакета — коли дійде черга)."""
+        seconds = job_duration(self.job)
+        if seconds:
+            value = uikit.format_min_sec(seconds)
+            self.lbl_duration.set_value(value, f"⏱ {value}")
+        else:
+            self.lbl_duration.set_value("", "")
 
     def set_progress(self, fraction, text):
         if fraction is None:
@@ -337,8 +359,13 @@ class RTubeApp(ctk.CTk):
         head = ctk.CTkFrame(card, fg_color="transparent")
         head.grid(row=0, column=0, sticky="ew", padx=16, pady=(12, 4))
         head.grid_columnconfigure(0, weight=1)
-        self.lbl_jobs = ctk.CTkLabel(head, text="Завантаження", font=uikit.FONT_TITLE, anchor="w")
-        self.lbl_jobs.grid(row=0, column=0, sticky="w")
+        title = ctk.CTkFrame(head, fg_color="transparent")
+        title.grid(row=0, column=0, sticky="w")
+        self.lbl_jobs = ctk.CTkLabel(title, text="Завантаження", font=uikit.FONT_TITLE, anchor="w")
+        self.lbl_jobs.pack(side="left")
+        # Сума тривалостей завершених відео — клік копіює «12,34» (хвилин,секунд).
+        self.lbl_total = uikit.CopyLabel(title, font=FONT_UI, text_color=uikit.STATE_INFO)
+        self.lbl_total.pack(side="left", padx=(16, 0))
         self.btn_cancel_all = ctk.CTkButton(head, text="Скасувати все", width=130, height=28,
                                             fg_color=uikit.DANGER, hover_color=uikit.DANGER_HOVER,
                                             command=self.cancel_all)
@@ -952,6 +979,7 @@ class RTubeApp(ctk.CTk):
                     row.set_meta(*payload)
                 elif kind == "state":
                     row.set_state(*payload)
+                    row.refresh_duration()
                     self._queue_dirty = True
                     if payload[0] == "error":
                         self._error_until = time.monotonic() + ERROR_FLASH
@@ -965,12 +993,24 @@ class RTubeApp(ctk.CTk):
         else:
             self.btn_cancel_all.grid_remove()
             self.lbl_jobs.configure(text="Завантаження")
+        self._update_total()
         if self._was_active and not active:
             self._on_queue_idle()
         self._was_active = bool(active)
         if self._queue_dirty:
             self._save_queue()
         self._update_taskbar(active)
+
+    def _update_total(self):
+        """«Завершено: 4 · ⏱ 12,34» — лише ті, що зараз у списку: «Прибрати
+        завершені» обнуляє лічильник разом зі списком."""
+        done = [r.job for r in self.rows.values() if r.job.state == "done"]
+        if not done:
+            self.lbl_total.set_value("", "")
+            return
+        seconds = sum(job_duration(j) or 0 for j in done)
+        value = uikit.format_min_sec(seconds)
+        self.lbl_total.set_value(value, f"Завершено: {len(done)}  ·  ⏱ {value}")
 
     # ── решта ─────────────────────────────────────────────────────────────
     def report_callback_exception(self, exc_type, exc, tb):

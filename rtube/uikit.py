@@ -151,6 +151,59 @@ def format_duration(seconds):
     return f"{hours}:{minutes:02d}:{secs:02d}" if hours else f"{minutes}:{secs:02d}"
 
 
+def format_min_sec(seconds):
+    """207 → «3,27»: хвилини, кома, секунди двома цифрами. Годин не виділяємо
+    (75 хв — «75,03»): такий формат просили для звітів."""
+    seconds = int(round(max(0, seconds or 0)))
+    minutes, secs = divmod(seconds, 60)
+    return f"{minutes},{secs:02d}"
+
+
+class CopyLabel(ctk.CTkLabel):
+    """Підпис, що копіює своє значення в буфер обміну по кліку.
+
+    Показує одне («⏱ 3,27»), копіює інше («3,27») і на мить пише
+    «Скопійовано ✓», щоб було видно, що клік спрацював.
+    """
+
+    COPIED = "Скопійовано ✓"
+
+    def __init__(self, master, **kwargs):
+        kwargs.setdefault("cursor", "hand2")
+        kwargs.setdefault("text", "")
+        super().__init__(master, **kwargs)
+        self.value = ""
+        # Не «_text»: так CTkLabel зве власне поле з показаним текстом.
+        self._shown = kwargs["text"]
+        self.bind("<Button-1>", self._copy)
+
+    def set_value(self, value, text):
+        if value == self.value and text == self._shown:
+            return      # викликається з опитування 10 разів на секунду — не перемальовуємо дарма
+        self.value = value
+        self._shown = text
+        if self.cget("text") != self.COPIED:
+            self.configure(text=text)
+
+    def _copy(self, _event=None):
+        if not self.value:
+            return
+        try:
+            self.clipboard_clear()
+            self.clipboard_append(self.value)
+        except Exception:
+            return
+        self.configure(text=self.COPIED)
+        self.after(1200, self._restore)
+
+    def _restore(self):
+        try:
+            if self.winfo_exists():
+                self.configure(text=self._shown)
+        except Exception:
+            pass
+
+
 def format_eta(seconds):
     if seconds is None:
         return ""

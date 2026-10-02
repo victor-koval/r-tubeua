@@ -53,5 +53,14 @@ class JsRuntimeTest(unittest.TestCase):
         self.assertEqual(usable, {"node": {"path": r"C:\node.exe"}})
 
 
+class MinSecTest(unittest.TestCase):
+    def test_format(self):
+        from rtube import uikit
+        cases = {207: "3,27", 65: "1,05", 59.6: "1,00", 0: "0,00", None: "0,00",
+                 4503: "75,03", 3600: "60,00"}
+        for seconds, expected in cases.items():
+            self.assertEqual(uikit.format_min_sec(seconds), expected, seconds)
+
+
 if __name__ == "__main__":
     unittest.main()
