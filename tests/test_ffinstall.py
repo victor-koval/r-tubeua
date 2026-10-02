@@ -75,7 +75,7 @@ class InstallTest(unittest.TestCase):
             self.assertEqual(url, second)
             return io.BytesIO(f"{SHA}  {ffinstall.SOURCES[1][3]}\n".encode())
 
-        def fake_download(url, dest, expected, progress, label):
+        def fake_download(url, dest, expected, progress, label, cancel=None):
             self.assertEqual(expected, SHA)
             write_zip(dest, ["ffmpeg-master-latest-win64-gpl/bin/ffmpeg.exe",
                              "ffmpeg-master-latest-win64-gpl/bin/ffprobe.exe"])
@@ -87,6 +87,29 @@ class InstallTest(unittest.TestCase):
         self.assertEqual(sorted(os.listdir(self.bin)), ["ffmpeg.exe", "ffprobe.exe"])
         # Тимчасові теки прибрано — поруч із bin нічого зайвого.
         self.assertEqual(os.listdir(os.path.dirname(self.bin)), ["bin"])
+
+    def test_cancel_mid_download_stops_without_fallback(self):
+        import threading
+        cancel = threading.Event()
+
+        class SlowResponse(io.BytesIO):
+            headers = {"Content-Length": str(5 * ffinstall.CHUNK)}
+
+            def read(self, n=-1):
+                cancel.set()          # «натиснули Скасувати» після першого мегабайта
+                return b"x" * ffinstall.CHUNK
+
+        def fake_open(url, timeout=60):
+            if url.endswith(".sha256"):
+                return io.BytesIO((SHA + "\n").encode())
+            return SlowResponse()
+
+        with mock.patch.object(ffinstall, "_open", side_effect=fake_open) as opened:
+            with self.assertRaises(ffinstall.InstallCancelled):
+                ffinstall.install(cancel=cancel)
+        # Друге джерело не пробували, тимчасове прибрано, bin не створено.
+        self.assertEqual(sum(1 for c in opened.call_args_list if "github" in c.args[0]), 0)
+        self.assertEqual(os.listdir(os.path.dirname(self.bin)), [])
 
     def test_all_sources_fail(self):
         with mock.patch.object(ffinstall, "_open", side_effect=OSError("немає мережі")):

@@ -56,6 +56,13 @@ class ChoicesTest(unittest.TestCase):
         self.assertEqual([(a.label, a.is_original) for a in c.audios],
                          [("Англійська — єдина доріжка", True)])
 
+    def test_drc_audio_only_as_fallback(self):
+        info = copy.deepcopy(INFO)
+        drc = dict(next(f for f in info["formats"] if f["format_id"] == "140-19"))
+        drc.update(format_id="140-19-drc", abr=200)      # навіть «кращий» за бітрейтом
+        info["formats"].append(drc)
+        self.assertEqual(formats.pick_audio_format(info, "uk", "m4a")["format_id"], "140-19")
+
     def test_default_quality_1080_h264(self):
         self.assertEqual(self.choices.videos[self.choices.default_video].key, (1080, 30, "H.264"))
 

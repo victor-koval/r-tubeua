@@ -10,16 +10,18 @@ from tkinter import filedialog, messagebox
 
 import customtkinter as ctk
 
-from . import applog, downloader, ffinstall, formats, settings, tools, uikit, ytupdate
+from . import (applog, downloader, ffinstall, formats, notify, queuestore, settings, taskbar,
+               tools, uikit, ytupdate)
 from .uikit import FONT_SMALL, FONT_UI, FONT_UI_BOLD, GREEN, GREEN_HOVER
 
 APP_TITLE = "R-TubeUA"
-APP_VERSION = "1.0.2"
+APP_VERSION = "1.1.0"
 
 DEFAULT_SIZE = (1000, 800)
 MIN_SIZE = (880, 660)
 THUMB_SIZE = (224, 126)
 CLOSE_TIMEOUT = 5          # скільки чекати зупинки завантаження при закритті, с
+ERROR_FLASH = 3            # скільки тримати червону смужку в панелі задач після помилки, с
 
 THEME_LIGHT, THEME_DARK, THEME_SYSTEM = "Світла", "Темна", "Системна"
 THEMES = {THEME_LIGHT: "Light", THEME_DARK: "Dark", THEME_SYSTEM: "System"}
@@ -27,6 +29,8 @@ THEMES = {THEME_LIGHT: "Light", THEME_DARK: "Dark", THEME_SYSTEM: "System"}
 SUBS_EMBED, SUBS_FILE = "Вшити у відео", "Окремий файл .srt"
 VIDEO_CONTAINERS = ("mp4", "mkv")
 AUDIO_CONTAINERS = ("m4a", "mp3")
+ACTIVE = ("queued", "running")
+FINISHED = ("done", "error", "cancelled")
 
 
 def _unique(labels):
@@ -47,6 +51,7 @@ class JobRow(ctk.CTkFrame):
         super().__init__(master, fg_color=uikit.SURFACE_RAISED, corner_radius=uikit.RADIUS)
         self.app = app
         self.job = job
+        self.fraction = 0.0
         self.grid_columnconfigure(0, weight=1)
 
         self.lbl_title = ctk.CTkLabel(self, text=job.title, font=FONT_UI_BOLD, anchor="w",
@@ -66,7 +71,7 @@ class JobRow(ctk.CTkFrame):
         self.actions.grid(row=0, column=1, rowspan=4, sticky="e", padx=(0, 10))
         self.btn_cancel = ctk.CTkButton(self.actions, text="Скасувати", width=96, height=30,
                                         fg_color=uikit.DANGER, hover_color=uikit.DANGER_HOVER,
-                                        command=lambda: app.manager.cancel(job))
+                                        command=lambda: app.cancel_job(job))
         self.btn_cancel.pack(side="left")
         self.btn_open = uikit.SecondaryButton(self.actions, text="▶ Відкрити", width=96,
                                               height=30, command=self._open)
@@ -77,6 +82,11 @@ class JobRow(ctk.CTkFrame):
         self.lbl_title.bind("<Configure>", lambda e: self.lbl_title.configure(
             wraplength=max(200, e.width - 4)))
 
+    def set_meta(self, title, summary):
+        """Після відкладеного аналізу: справжня назва й обрана якість/доріжка."""
+        self.lbl_title.configure(text=title)
+        self.lbl_summary.configure(text=summary)
+
     def set_progress(self, fraction, text):
         if fraction is None:
             if self.bar.cget("mode") != "indeterminate":
@@ -86,17 +96,19 @@ class JobRow(ctk.CTkFrame):
             if self.bar.cget("mode") != "determinate":
                 self.bar.stop()
                 self.bar.configure(mode="determinate")
-            self.bar.set(max(0.0, min(1.0, fraction)))
+            self.fraction = max(0.0, min(1.0, fraction))
+            self.bar.set(self.fraction)
         self.lbl_status.configure(text=text, text_color=uikit.TEXT_MUTED)
 
     def set_state(self, state, text):
         colors = {"done": uikit.STATE_OK, "error": uikit.STATE_ERROR,
                   "cancelled": uikit.STATE_WARN, "running": uikit.STATE_INFO}
         self.lbl_status.configure(text=text, text_color=colors.get(state, uikit.TEXT_MUTED))
-        if state in ("done", "error", "cancelled"):
+        if state in FINISHED:
             self.bar.stop()
             self.bar.configure(mode="determinate")
-            self.bar.set(1 if state == "done" else 0)
+            self.fraction = 1.0 if state == "done" else 0.0
+            self.bar.set(self.fraction)
             self.btn_cancel.pack_forget()
         if state == "done":
             # «Готово», яке не зовсім «готово», — жовтим: інакше пропущене
@@ -111,6 +123,7 @@ class JobRow(ctk.CTkFrame):
             self.btn_retry.pack(side="left")
         elif state == "running":
             self.bar.configure(mode="determinate")
+            self.fraction = 0.0
             self.bar.set(0)
 
     def _open(self):
@@ -148,7 +161,14 @@ class RTubeApp(ctk.CTk):
         self.info = None
         self.choices = None
         self._analyze_token = 0
+        self._analyzing = False
         self._thumb_image = None
+        self._queue_dirty = False
+        self._session = set()               # id завдань від останнього «все порожньо»
+        self._was_active = False
+        self._error_until = 0.0
+        self._settings_window = None
+        self.taskbar = None
 
         self.grid_columnconfigure(0, weight=1)
         # Черзі — мінімум місця на два рядки, хай навіть вікно низьке.
@@ -156,12 +176,16 @@ class RTubeApp(ctk.CTk):
         self._build_header()
         self._build_url_card()
         self._build_video_card()
+        from .batch import BatchCard
+        self.batch_card = BatchCard(self, self)
         self._build_jobs_card()
         self._build_statusbar()
 
         self.protocol("WM_DELETE_WINDOW", self.on_closing)
         self.after(100, self._poll)
         self.after(50, lambda: self.ent_url.focus_set())
+        self.after(600, self._init_taskbar)
+        self.after(300, self._restore_queue)
         threading.Thread(target=self._check_environment, daemon=True).start()
         applog.info(f"Запуск {APP_TITLE} v{APP_VERSION}")
 
@@ -185,14 +209,12 @@ class RTubeApp(ctk.CTk):
                      font=FONT_SMALL, text_color=uikit.BLACK_40).grid(
             row=0, column=2, sticky="w", padx=14)
 
-        self.theme_var = ctk.StringVar(value=settings.get("theme"))
-        ctk.CTkOptionMenu(header, values=list(THEMES), variable=self.theme_var, width=110,
-                          fg_color=uikit.HEADER_HOVER, button_color=uikit.HEADER_HOVER,
-                          button_hover_color="#403b3b", text_color=uikit.HEADER_TEXT,
-                          command=self._set_theme).grid(row=0, column=3, padx=(0, 8))
-        ctk.CTkButton(header, text="Лог", width=56, fg_color=uikit.HEADER_HOVER,
-                      hover_color="#403b3b", text_color=uikit.HEADER_TEXT,
-                      command=applog.open_log_folder).grid(row=0, column=4, padx=(0, 22))
+        style = {"fg_color": uikit.HEADER_HOVER, "hover_color": "#403b3b",
+                 "text_color": uikit.HEADER_TEXT}
+        ctk.CTkButton(header, text="⚙  Налаштування", width=130, command=self.open_settings,
+                      **style).grid(row=0, column=3, padx=(0, 8))
+        ctk.CTkButton(header, text="Лог", width=56, command=applog.open_log_folder,
+                      **style).grid(row=0, column=4, padx=(0, 22))
 
     def _build_url_card(self):
         card = uikit.Card(self)
@@ -203,8 +225,8 @@ class RTubeApp(ctk.CTk):
         row.grid_columnconfigure(0, weight=1)
 
         self.ent_url = ctk.CTkEntry(row, height=38, font=FONT_UI,
-                                    placeholder_text="Вставте посилання на відео YouTube "
-                                                     "(можна з &list=, &t= — зайве приберемо)")
+                                    placeholder_text="Посилання на відео, кілька посилань, "
+                                                     "плейлист або канал YouTube")
         self.ent_url.grid(row=0, column=0, sticky="ew")
         self.ent_url.bind("<Return>", lambda e: self.analyze())
         uikit.bind_text_hotkeys(self.ent_url, on_paste=self._after_paste)
@@ -277,7 +299,6 @@ class RTubeApp(ctk.CTk):
         self.subs_mode = ctk.CTkSegmentedButton(opts, values=[SUBS_EMBED, SUBS_FILE],
                                                 selected_color=GREEN,
                                                 selected_hover_color=GREEN_HOVER)
-        self.subs_mode.set(SUBS_FILE if settings.get("subs_mode") == "file" else SUBS_EMBED)
         self.subs_mode.grid(row=2, column=2, sticky="w", padx=(12, 0))
 
         label("Формат файлу", 3)
@@ -316,10 +337,13 @@ class RTubeApp(ctk.CTk):
         head = ctk.CTkFrame(card, fg_color="transparent")
         head.grid(row=0, column=0, sticky="ew", padx=16, pady=(12, 4))
         head.grid_columnconfigure(0, weight=1)
-        ctk.CTkLabel(head, text="Завантаження", font=uikit.FONT_TITLE, anchor="w").grid(
-            row=0, column=0, sticky="w")
+        self.lbl_jobs = ctk.CTkLabel(head, text="Завантаження", font=uikit.FONT_TITLE, anchor="w")
+        self.lbl_jobs.grid(row=0, column=0, sticky="w")
+        self.btn_cancel_all = ctk.CTkButton(head, text="Скасувати все", width=130, height=28,
+                                            fg_color=uikit.DANGER, hover_color=uikit.DANGER_HOVER,
+                                            command=self.cancel_all)
         uikit.SecondaryButton(head, text="Прибрати завершені", width=150, height=28,
-                              command=self._clear_finished).grid(row=0, column=1)
+                              command=self._clear_finished).grid(row=0, column=2)
         self.jobs_list = ctk.CTkScrollableFrame(card, fg_color="transparent")
         self.jobs_list.grid(row=1, column=0, sticky="nsew", padx=8, pady=(0, 10))
         self.jobs_list.grid_columnconfigure(0, weight=1)
@@ -342,12 +366,18 @@ class RTubeApp(ctk.CTk):
                                          font=FONT_SMALL, command=self._restart)
         self.btn_ffmpeg = ctk.CTkButton(bar, text="Встановити ffmpeg", width=140, height=24,
                                         font=FONT_SMALL, command=self._install_ffmpeg)
+        self.btn_ffmpeg_cancel = ctk.CTkButton(bar, text="Скасувати", width=90, height=24,
+                                               font=FONT_SMALL, fg_color=uikit.DANGER,
+                                               hover_color=uikit.DANGER_HOVER,
+                                               command=ffinstall.cancel)
         self._ffmpeg_was_running = False
 
     # ── оточення ──────────────────────────────────────────────────────────
     def _check_environment(self):
         self._send_environment()
         # Свіжий yt-dlp — після перевірки оточення, щоб не гальмувати старт.
+        if not settings.get("ytdlp_autoupdate"):
+            return
         try:
             installed = ytupdate.check_and_install()
             if installed:
@@ -369,6 +399,7 @@ class RTubeApp(ctk.CTk):
         if ffinstall.start():
             applog.info("Встановлення ffmpeg розпочато")
         self.btn_ffmpeg.grid_remove()
+        self.btn_ffmpeg_cancel.grid(row=0, column=3, padx=(8, 0))
         self._ffmpeg_was_running = True
 
     def _track_ffmpeg_install(self):
@@ -379,9 +410,16 @@ class RTubeApp(ctk.CTk):
             self._ffmpeg_was_running = True
             pct = f" ({st['fraction'] * 100:.0f}%)" if st["fraction"] else ""
             self.lbl_status.configure(text=st["text"] + pct, text_color=uikit.STATE_INFO)
+            self.btn_ffmpeg_cancel.grid(row=0, column=3, padx=(8, 0))
         elif self._ffmpeg_was_running:
             self._ffmpeg_was_running = False
-            if st["error"]:
+            self.btn_ffmpeg_cancel.grid_remove()
+            if st["cancelled"]:
+                self.lbl_status.configure(text="Встановлення ffmpeg скасовано",
+                                          text_color=uikit.STATE_WARN)
+                self.btn_ffmpeg.configure(text=f"Встановити ffmpeg (~{ffinstall.APPROX_SIZE_MB} МБ)")
+                self.btn_ffmpeg.grid(row=0, column=3, padx=(8, 0))
+            elif st["error"]:
                 self.lbl_status.configure(text=f"ffmpeg не встановився: {st['error']}"[:220],
                                           text_color=uikit.STATE_ERROR)
                 self.btn_ffmpeg.configure(text="Спробувати ще раз")
@@ -427,8 +465,9 @@ class RTubeApp(ctk.CTk):
 
     # ── аналіз ────────────────────────────────────────────────────────────
     def _after_paste(self):
-        url = tools.clean_url(self.ent_url.get())
-        if url.startswith("http"):
+        text = self.ent_url.get()
+        if tools.collection_url(text.strip()) or tools.extract_video_urls(text) or \
+                tools.clean_url(text).startswith("http"):
             self.analyze()
 
     def paste_and_analyze(self):
@@ -443,22 +482,54 @@ class RTubeApp(ctk.CTk):
         self.ent_url.insert(0, text)
         self.analyze()
 
+    def _set_analyzing(self, on):
+        """Під час аналізу «Аналізувати» стає «Скасувати»."""
+        self._analyzing = on
+        if on:
+            self.btn_analyze.configure(text="Скасувати", fg_color=uikit.DANGER,
+                                       hover_color=uikit.DANGER_HOVER, command=self.cancel_analysis)
+        else:
+            self.btn_analyze.configure(text="Аналізувати", fg_color=GREEN,
+                                       hover_color=GREEN_HOVER, command=self.analyze)
+
+    def cancel_analysis(self):
+        """Сам запит до YouTube не перервати, але його результат просто
+        відкидається: токен уже інший."""
+        self._analyze_token += 1
+        self._set_analyzing(False)
+        self._hint("Аналіз скасовано", uikit.STATE_WARN)
+
     def analyze(self):
-        url = tools.clean_url(self.ent_url.get())
-        if not url:
+        text = self.ent_url.get().strip()
+        if not text:
             self._hint("Спершу вставте посилання", uikit.STATE_WARN)
             return
+        collection = tools.collection_url(text)
+        urls = tools.extract_video_urls(text)
+        if collection:
+            self._expand(collection)
+        elif len(urls) > 1:
+            self.ent_url.delete(0, "end")
+            self.ent_url.insert(0, "  ".join(urls))
+            self._show_batch("", [(u, u) for u in urls])
+        else:
+            self._analyze_one(urls[0] if urls else tools.clean_url(text))
+
+    def _start_background(self, work, hint):
+        self._analyze_token += 1
+        token = self._analyze_token
+        self._set_analyzing(True)
+        self._hint(hint, uikit.STATE_INFO)
+        threading.Thread(target=lambda: work(token), daemon=True).start()
+
+    def _analyze_one(self, url):
         if url != self.ent_url.get().strip():
             self.ent_url.delete(0, "end")
             self.ent_url.insert(0, url)
-        self._analyze_token += 1
-        token = self._analyze_token
-        self.btn_analyze.configure(state="disabled", text="Аналіз…")
-        self._hint("Отримую список якостей і доріжок… (5–15 секунд)", uikit.STATE_INFO)
-        max_height = int(settings.get("max_height") or 1080)
+        max_height = int(settings.get("max_height") or 0)
         preferred = settings.get("preferred_audio") or "uk"
 
-        def work():
+        def work(token):
             try:
                 info = downloader.analyze(url)
                 choices = formats.build_choices(info, max_height, preferred)
@@ -468,13 +539,25 @@ class RTubeApp(ctk.CTk):
                 applog.error(f"Аналіз {url} не вдався", exc)
                 self.ui_events.put(("analyze_error", token, downloader.humanize_error(exc)))
 
-        threading.Thread(target=work, daemon=True).start()
+        self._start_background(work, "Отримую список якостей і доріжок… (5–15 секунд)")
+
+    def _expand(self, url):
+        def work(token):
+            try:
+                title, entries = downloader.expand_collection(url)
+                self.ui_events.put(("expanded", token, title, entries))
+            except Exception as exc:
+                applog.error(f"Плейлист {url} не розгорнувся", exc)
+                self.ui_events.put(("analyze_error", token, downloader.humanize_error(exc)))
+
+        self._start_background(work, "Отримую список відео плейлиста чи каналу…")
 
     def _show_info(self, url, info, choices, thumb):
-        self.btn_analyze.configure(state="normal", text="Аналізувати")
+        self._set_analyzing(False)
         if not choices.videos:
             self._hint("У ролику не знайдено жодного відео- чи аудіоформату", uikit.STATE_ERROR)
             return
+        self.batch_card.grid_remove()
         self.info, self.choices, self.url = info, choices, url
         self._hint("Готово — перевірте параметри й натисніть «Завантажити»", uikit.STATE_OK)
 
@@ -505,6 +588,14 @@ class RTubeApp(ctk.CTk):
         self.opt_subs.configure(values=self.sub_labels)
         self.opt_subs.set(self.sub_labels[choices.default_sub])
 
+        # Кожна нова картка починається зі значень із налаштувань, а не з
+        # того, що обирали для попереднього відео.
+        self.keep_original_var.set(bool(settings.get("keep_original")))
+        self.subs_mode.set(SUBS_FILE if settings.get("subs_mode") == "file" else SUBS_EMBED)
+        self.container.configure(values=list(VIDEO_CONTAINERS))
+        self.container.set(settings.get("container") if settings.get("container")
+                           in VIDEO_CONTAINERS else VIDEO_CONTAINERS[0])
+
         has_uk = any(formats.base_lang(a.lang) == "uk" for a in choices.audios)
         if has_uk:
             self.lbl_audio_hint.configure(text="✓ Є українська доріжка — обрано її",
@@ -523,6 +614,21 @@ class RTubeApp(ctk.CTk):
 
         self._on_video_change(initial=True)
         self.video_card.grid(row=2, column=0, sticky="ew", padx=22, pady=(0, 10))
+
+    def _show_batch(self, title, entries):
+        self._set_analyzing(False)
+        self.video_card.grid_remove()
+        self.info = self.choices = None
+        self.batch_card.show(title, entries)
+        self.batch_card.grid(row=2, column=0, sticky="ew", padx=22, pady=(0, 10))
+        self._hint(f"Знайдено {len(entries)} відео — оберіть параметри для всіх одразу",
+                   uikit.STATE_OK)
+
+    def close_batch(self):
+        self.batch_card.grid_remove()
+        self._hint("Пакет скасовано", uikit.STATE_WARN)
+        self.ent_url.delete(0, "end")
+        self.ent_url.focus_set()
 
     def _hint(self, text, color=uikit.TEXT_MUTED):
         self.lbl_url_hint.configure(text=text, text_color=color)
@@ -584,6 +690,19 @@ class RTubeApp(ctk.CTk):
         self.lbl_container_hint.configure(text=hints.get(self.container.get(), ""))
 
     # ── завантаження ──────────────────────────────────────────────────────
+    def _ensure_ffmpeg(self, needed):
+        """Пропонує поставити ffmpeg, якщо він знадобиться. False — користувач відмовився."""
+        if not needed or tools.find_ffmpeg() or ffinstall.in_progress():
+            return True
+        if not messagebox.askyesno(
+                APP_TITLE,
+                "Щоб склеїти відео зі звуком, потрібен ffmpeg, а на цьому комп'ютері "
+                f"його немає.\n\nЗавантажити його зараз (~{ffinstall.APPROX_SIZE_MB} МБ, "
+                "один раз)? Відео почне качатися одразу після цього.", parent=self):
+            return False
+        self._install_ffmpeg()
+        return True
+
     def download(self):
         if not self.info or not self.choices:
             self._hint("Спершу проаналізуйте посилання", uikit.STATE_WARN)
@@ -591,39 +710,22 @@ class RTubeApp(ctk.CTk):
         video, audio, sub = self._video(), self._audio(), self._sub()
         if video is None:
             return
-        out_dir = self.dir_var.get()
         audio_only = video.key[0] == formats.AUDIO_ONLY
         keep_original = bool(self.keep_original_var.get()) and \
             self.chk_original.cget("state") == "normal"
         job = downloader.Job(
-            url=self.url, title=self.info.get("title") or self.url, info=self.info,
-            video_key=video.key, audio_lang=audio.lang if audio else "",
-            audio_label=audio.label if audio else "", out_dir=out_dir,
+            url=self.url, title=self.info.get("title") or self.url, out_dir=self.dir_var.get(),
+            info=self.info, video_key=video.key, audio_lang=audio.lang if audio else "",
+            audio_label=audio.label if audio else "",
             container=self.container.get(), keep_original=keep_original,
             sub_key=sub.key if sub and not audio_only else (),
             subs_mode="file" if self.subs_mode.get() == SUBS_FILE else "embed")
-
-        if downloader.needs_ffmpeg(job, progressive=video.has_audio) and \
-                not tools.find_ffmpeg() and not ffinstall.in_progress():
-            if not messagebox.askyesno(
-                    APP_TITLE,
-                    "Щоб склеїти відео зі звуком, потрібен ffmpeg, а на цьому комп'ютері "
-                    f"його немає.\n\nЗавантажити його зараз (~{ffinstall.APPROX_SIZE_MB} МБ, "
-                    "один раз)? Відео почне качатися одразу після цього.", parent=self):
-                return
-            self._install_ffmpeg()
-
-        remember = {"download_dir": out_dir, "keep_original": bool(self.keep_original_var.get()),
-                    "subs_mode": job.subs_mode}
-        if audio_only:
-            remember["audio_container"] = job.container
-        else:
-            remember["container"] = job.container
-            remember["max_height"] = video.height
-        settings.set_many(**remember)
-
-        self._add_row(job)
-        self.manager.submit(job)
+        if not self._ensure_ffmpeg(downloader.needs_ffmpeg(job, progressive=video.has_audio)):
+            return
+        # Вибір у картці стосується лише цього завантаження — значення за
+        # замовчуванням живуть у вікні налаштувань.
+        if not self._enqueue([job]):
+            return
         self._hint(f"«{job.title}» додано в чергу. Можна вставляти наступне посилання.",
                    uikit.STATE_OK)
         # Картку ховаємо: відео вже в черзі, а місце потрібне списку
@@ -633,17 +735,60 @@ class RTubeApp(ctk.CTk):
         self.ent_url.delete(0, "end")
         self.ent_url.focus_set()
 
+    def download_batch(self):
+        jobs = self.batch_card.build_jobs(self.dir_var.get())
+        if not jobs:
+            return
+        if not self._ensure_ffmpeg(any(downloader.needs_ffmpeg(j) for j in jobs)):
+            return
+        added = self._enqueue(jobs)
+        skipped = len(jobs) - added
+        text = f"Додано в чергу: {added} відео"
+        if skipped:
+            text += f" (ще {skipped} вже були в черзі)"
+        self._hint(text, uikit.STATE_OK)
+        self.batch_card.grid_remove()
+        self.ent_url.delete(0, "end")
+        self.ent_url.focus_set()
+
+    def _enqueue(self, jobs):
+        """Ставить у чергу, пропускаючи ролики, що вже чекають чи качаються. Повертає, скільки додано."""
+        busy = {r.job.url for r in self.rows.values() if r.job.state in ACTIVE}
+        added = 0
+        for job in jobs:
+            if job.url in busy:
+                continue
+            busy.add(job.url)
+            self._add_row(job)
+            self._session.add(job.id)
+            self.manager.submit(job)
+            added += 1
+        if not added and jobs:
+            self._hint("Це відео вже в черзі", uikit.STATE_WARN)
+        self._queue_dirty = True
+        return added
+
+    def cancel_job(self, job):
+        self.manager.cancel(job)
+        self._queue_dirty = True
+
+    def cancel_all(self):
+        active = self._active_jobs()
+        if len(active) >= 2 and not messagebox.askyesno(
+                APP_TITLE, f"Скасувати всі завантаження ({len(active)})?", parent=self):
+            return
+        # Спершу ті, що чекають, — інакше черга встигла б узяти наступне,
+        # поки зупиняється поточне.
+        for job in sorted(active, key=lambda j: j.state == "running"):
+            self.manager.cancel(job)
+        self._queue_dirty = True
+
     def retry(self, job):
-        clone = downloader.Job(
-            url=job.url, title=job.title, info=job.info, video_key=job.video_key,
-            audio_lang=job.audio_lang, audio_label=job.audio_label, out_dir=job.out_dir,
-            container=job.container, keep_original=job.keep_original, sub_key=job.sub_key,
-            subs_mode=job.subs_mode)
+        clone = job.clone()
         old = self.rows.pop(job.id, None)
         if old:
             old.destroy()
-        self._add_row(clone)
-        self.manager.submit(clone)
+        self._enqueue([clone])
 
     def _add_row(self, job):
         self.lbl_empty.grid_remove()
@@ -660,7 +805,7 @@ class RTubeApp(ctk.CTk):
 
     def _clear_finished(self):
         for job_id, row in list(self.rows.items()):
-            if row.job.state in ("done", "error", "cancelled"):
+            if row.job.state in FINISHED:
                 row.destroy()
                 del self.rows[job_id]
         self._regrid_rows()
@@ -672,6 +817,100 @@ class RTubeApp(ctk.CTk):
             path = os.path.normpath(path)
             self.dir_var.set(path)
             settings.set_many(download_dir=path)
+
+    # ── черга між запусками ───────────────────────────────────────────────
+    def _restore_queue(self):
+        if not settings.get("resume_queue"):
+            return
+        jobs = queuestore.load()
+        if not jobs:
+            return
+        added = self._enqueue(jobs)
+        if added:
+            applog.info(f"Відновлено незавершених завантажень: {added}")
+            self._hint(f"Продовжую незавершені завантаження: {added}", uikit.STATE_INFO)
+
+    def _save_queue(self):
+        self._queue_dirty = False
+        if getattr(self, "_closing", False):
+            return      # під час закриття черга вже збережена — скасування її не стирає
+        if not settings.get("resume_queue"):
+            return
+        jobs = sorted((r.job for r in self.rows.values() if r.job.state in ACTIVE),
+                      key=lambda j: j.id)
+        if jobs:
+            queuestore.save(jobs)
+        else:
+            queuestore.clear()
+
+    # ── панель задач і сповіщення ─────────────────────────────────────────
+    def _init_taskbar(self):
+        try:
+            self.taskbar = taskbar.Taskbar(int(self.wm_frame(), 16))
+        except Exception as exc:
+            applog.warning(f"Панель задач недоступна: {exc}")
+            self.taskbar = None
+
+    def _update_taskbar(self, active):
+        if not self.taskbar or not settings.get("taskbar_progress"):
+            return
+        if time.monotonic() < self._error_until:
+            self.taskbar.set_state(taskbar.ERROR)
+            return
+        session = [self.rows[i] for i in self._session if i in self.rows]
+        running = [r for r in session if r.job.state == "running"]
+        if running and running[0].bar.cget("mode") == "determinate":
+            done = sum(1 for r in session if r.job.state in FINISHED)
+            total = max(1, len(session))
+            self.taskbar.set_progress((done + running[0].fraction) / total)
+        elif active or self._analyzing or ffinstall.in_progress():
+            self.taskbar.set_state(taskbar.INDETERMINATE)
+        else:
+            self.taskbar.clear()
+
+    def _on_queue_idle(self):
+        """Черга щойно спорожніла: сповіщення (якщо вікно не перед очима)."""
+        session = [self.rows[i].job for i in self._session if i in self.rows]
+        self._session.clear()
+        done = sum(1 for j in session if j.state == "done")
+        failed = sum(1 for j in session if j.state == "error")
+        if not (done or failed) or not settings.get("notify_done"):
+            return
+        if self.focus_displayof() is not None and self.state() != "iconic":
+            return
+        text = f"Завантажено {done} відео" if done else "Нічого не завантажилось"
+        if failed:
+            text += f" · не вдалося {failed}"
+        notify.show(APP_TITLE, text)
+
+    # ── налаштування ──────────────────────────────────────────────────────
+    def open_settings(self):
+        if self._settings_window is not None and self._settings_window.winfo_exists():
+            self._settings_window.focus_set()
+            return
+        from .settings_dialog import SettingsDialog
+        self._settings_window = SettingsDialog(self, self._on_setting_changed)
+
+    def _on_setting_changed(self, key, value):
+        if key == "theme":
+            ctk.set_appearance_mode(THEMES.get(value, "Dark"))
+        elif key == "download_dir":
+            self.dir_var.set(settings.get("download_dir"))
+        elif key == "taskbar_progress" and not value and self.taskbar:
+            self.taskbar.clear()
+        elif key == "resume_queue":
+            if value:
+                self._save_queue()
+            else:
+                queuestore.clear()
+        elif key == "ytdlp_ready":
+            self._show_ytdlp_ready(value)
+
+    def _show_ytdlp_ready(self, version):
+        self.lbl_update.configure(text=f"yt-dlp {version} завантажено — "
+                                       "застосується після перезапуску",
+                                  text_color=uikit.STATE_OK)
+        self.btn_restart.grid(row=0, column=2, padx=(8, 0))
 
     # ── події з фонових потоків ───────────────────────────────────────────
     def _poll(self):
@@ -690,15 +929,15 @@ class RTubeApp(ctk.CTk):
                 kind = event[0]
                 if kind == "analyzed" and event[1] == self._analyze_token:
                     self._show_info(*event[2:])
+                elif kind == "expanded" and event[1] == self._analyze_token:
+                    self._show_batch(*event[2:])
                 elif kind == "analyze_error" and event[1] == self._analyze_token:
-                    self.btn_analyze.configure(state="normal", text="Аналізувати")
+                    self._set_analyzing(False)
                     self._hint(event[2], uikit.STATE_ERROR)
                 elif kind == "env":
                     self._show_environment(*event[1:])
                 elif kind == "ytdlp_ready":
-                    self.lbl_update.configure(text=f"yt-dlp {event[1]} завантажено — "
-                                                   "застосується після перезапуску")
-                    self.btn_restart.grid(row=0, column=2, padx=(8, 0))
+                    self._show_ytdlp_ready(event[1])
         except queue.Empty:
             pass
         try:
@@ -709,16 +948,31 @@ class RTubeApp(ctk.CTk):
                     continue
                 if kind == "progress":
                     row.set_progress(*payload)
+                elif kind == "meta":
+                    row.set_meta(*payload)
                 elif kind == "state":
                     row.set_state(*payload)
+                    self._queue_dirty = True
+                    if payload[0] == "error":
+                        self._error_until = time.monotonic() + ERROR_FLASH
         except queue.Empty:
             pass
 
-    # ── решта ─────────────────────────────────────────────────────────────
-    def _set_theme(self, name):
-        ctk.set_appearance_mode(THEMES.get(name, "Dark"))
-        settings.set_many(theme=name)
+        active = self._active_jobs()
+        if active:
+            self.btn_cancel_all.grid(row=0, column=1, padx=(0, 8))
+            self.lbl_jobs.configure(text=f"Завантаження · у роботі {len(active)}")
+        else:
+            self.btn_cancel_all.grid_remove()
+            self.lbl_jobs.configure(text="Завантаження")
+        if self._was_active and not active:
+            self._on_queue_idle()
+        self._was_active = bool(active)
+        if self._queue_dirty:
+            self._save_queue()
+        self._update_taskbar(active)
 
+    # ── решта ─────────────────────────────────────────────────────────────
     def report_callback_exception(self, exc_type, exc, tb):
         """Виняток в обробнику кнопки чи події. У .exe без консолі Tk
         інакше мовчки друкує його в нікуди."""
@@ -730,10 +984,10 @@ class RTubeApp(ctk.CTk):
             pass
 
     def _active_jobs(self):
-        return [r.job for r in self.rows.values() if r.job.state in ("queued", "running")]
+        return [r.job for r in self.rows.values() if r.job.state in ACTIVE]
 
     def _restart(self):
-        if self._active_jobs():
+        if self._active_jobs() and not settings.get("resume_queue"):
             self.lbl_update.configure(text="Дочекайтесь завершення завантажень, тоді перезапустіть",
                                       text_color=uikit.STATE_WARN)
             return
@@ -744,23 +998,30 @@ class RTubeApp(ctk.CTk):
             self.lbl_update.configure(text="Не вдалося перезапустити — закрийте й відкрийте вручну",
                                       text_color=uikit.STATE_ERROR)
             return
-        self._close_now()
+        self.on_closing(force=True)
 
-    def on_closing(self):
+    def on_closing(self, force=False):
         if getattr(self, "_closing", False):
             return      # уже зупиняємось — повторне ✕ не перепитує
         active = self._active_jobs()
-        if active and not messagebox.askyesno(
+        resume = bool(settings.get("resume_queue"))
+        if active and not resume and not force and not messagebox.askyesno(
                 APP_TITLE, f"Ще не завершено завантажень: {len(active)}.\n"
                            "Закрити програму й перервати їх?", parent=self):
             return
-        for job in active:
-            self.manager.cancel(job)
+        if resume:
+            # Зберігаємо ДО скасування: далі _closing вимикає запис, і черга
+            # у файлі лишається такою, якою була до закриття.
+            self._save_queue()
+        self._closing = True
+        ffinstall.cancel()
+        for job in sorted(active, key=lambda j: j.state == "running"):
+            # З resume — лишаємо .part, щоб докачати після запуску.
+            self.manager.cancel(job, keep_partial=resume)
         if self.manager.is_busy():
             # Скасування спрацює на наступному кроці yt-dlp, після чого
             # потік прибере .part і проміжні файли. Закрийся вікно одразу —
             # потік загинув би разом із процесом і сміття лишилося б у теці.
-            self._closing = True
             self.lbl_status.configure(text="Зупиняю завантаження…", text_color=uikit.STATE_WARN)
             self._wait_and_close(deadline=time.monotonic() + CLOSE_TIMEOUT)
             return
@@ -775,6 +1036,8 @@ class RTubeApp(ctk.CTk):
         self._close_now()
 
     def _close_now(self):
+        if self.taskbar:
+            self.taskbar.clear()
         if self.state() == "normal":
             settings.set_many(geometry=self._logical_size())
         self.destroy()

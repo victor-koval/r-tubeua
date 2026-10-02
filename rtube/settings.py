@@ -46,17 +46,27 @@ def _default_download_dir():
 
 DEFAULTS = {
     "download_dir": "",        # куди зберігати; порожньо — «Завантаження» користувача
-    "max_height": 1080,        # якість, яку обирати за замовчуванням (і нижче, якщо такої немає)
+    "max_height": 1080,        # якість за замовчуванням (і нижче, якщо такої немає); 0 — найкраща
     "container": "mp4",        # mp4 / mkv для відео
     "audio_container": "m4a",  # m4a / mp3 для режиму «лише звук»
-    "preferred_audio": "uk",   # мова доріжки за замовчуванням
+    "preferred_audio": "uk",   # uk — українська, якщо є; orig — оригінальна доріжка
     "keep_original": False,    # додати оригінальну доріжку другою
     "subs_mode": "embed",      # embed — вшити у відео, file — окремим .srt
     "theme": "Темна",
+    "notify_done": True,       # сповіщення Windows, коли все завантажено
+    "taskbar_progress": True,  # прогрес на іконці в панелі задач
+    "resume_queue": True,      # продовжувати незавершене після перезапуску
+    "ytdlp_autoupdate": True,  # самостійно оновлювати yt-dlp (див. ytupdate.py)
     "geometry": "",
     "ytdlp_checked_at": 0,     # коли востаннє питали PyPI про свіжий yt-dlp
     "ytdlp_bad": [],           # версії yt-dlp, що не пройшли самоперевірку або не запустились
 }
+
+# Те, що показано у вікні налаштувань і що скидає «Скинути до стандартних».
+# Службове (розмір вікна, стан оновлювача) сюди не входить.
+USER_KEYS = ("download_dir", "max_height", "container", "audio_container", "preferred_audio",
+             "keep_original", "subs_mode", "theme", "notify_done", "taskbar_progress",
+             "resume_queue", "ytdlp_autoupdate")
 
 _lock = threading.Lock()
 _cache = None
@@ -94,6 +104,11 @@ def set_many(**values):
             changed = True
     if changed:
         save()
+
+
+def reset_user():
+    """«Скинути до стандартних»: лише те, що є у вікні налаштувань."""
+    set_many(**{key: DEFAULTS[key] for key in USER_KEYS})
 
 
 def save():

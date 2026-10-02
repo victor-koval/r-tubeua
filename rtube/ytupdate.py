@@ -64,6 +64,17 @@ def bundled_version():
         return None
 
 
+def _loaded_version():
+    """Версія yt-dlp, що вже працює, — якщо state порожній (не знайшлося
+    метаданих вшитого пакета або activate() не викликали). Без цього кожна
+    перевірка вважала б поточну версію невідомою й ставила ту саму заново."""
+    try:
+        import yt_dlp.version
+        return yt_dlp.version.__version__
+    except Exception:
+        return None
+
+
 def _bad_versions():
     return list(settings.get("ytdlp_bad") or [])
 
@@ -272,7 +283,7 @@ def check_and_install(force=False):
 
     latest = _get_json(PYPI_JSON.format(name="yt-dlp"))
     version = latest["info"]["version"]
-    current = state["pending"] or state["active"]
+    current = state["pending"] or state["active"] or _loaded_version()
     if not is_newer(version, current) or version in _bad_versions():
         applog.info(f"yt-dlp актуальний ({current}; на PyPI {version})")
         return None

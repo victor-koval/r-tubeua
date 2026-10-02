@@ -53,6 +53,64 @@ def clean_url(text):
     return text
 
 
+_URL_TOKEN = re.compile(r"(?:https?://|www\.|m\.|youtu\.be/|youtube\.com/)\S+", re.I)
+_CHANNEL_TABS = ("videos", "shorts", "streams")
+
+
+def _is_youtube(host):
+    host = (host or "").lower()
+    return any(host == h or host.endswith("." + h) for h in _YT_HOSTS)
+
+
+def collection_url(text):
+    """Посилання на плейлист або канал → канонічне посилання, інакше None.
+
+    Канал без вкладки (youtube.com/@назва) yt-dlp віддає як список вкладок
+    («Відео», «Shorts»…), а не роликів, тож додаємо /videos. Посилання на ролик
+    у плейлисті (watch?v=…&list=…) — це ролик, а не плейлист.
+    """
+    text = (text or "").strip().strip('"').strip("'").strip()
+    if not text or any(ch.isspace() for ch in text):
+        return None
+    if not re.match(r"^[a-z]+://", text, re.I):
+        text = "https://" + text
+    try:
+        parsed = urlparse(text)
+    except ValueError:
+        return None
+    if not _is_youtube(parsed.hostname) or parsed.hostname.lower().endswith("youtu.be"):
+        return None
+    parts = [p for p in parsed.path.split("/") if p]
+    if parts[:1] == ["playlist"]:
+        list_id = (parse_qs(parsed.query).get("list") or [""])[0]
+        return f"https://www.youtube.com/playlist?list={list_id}" if list_id else None
+    if parts and (parts[0].startswith("@") or (parts[0] in ("channel", "c", "user") and len(parts) > 1)):
+        base = parts[:1] if parts[0].startswith("@") else parts[:2]
+        rest = parts[len(base):]
+        tab = rest[0] if rest and rest[0] in _CHANNEL_TABS else "videos"
+        return "https://www.youtube.com/" + "/".join(base + [tab])
+    return None
+
+
+def extract_video_urls(text):
+    """Усі посилання на ролики з тексту (кілька рядків, через пробіл, разом
+    із підписами) — канонічні й без повторів. Плейлисти й канали не входять:
+    їх розгортає expand_collection."""
+    text = (text or "").strip()
+    tokens = _URL_TOKEN.findall(text)
+    if not tokens and _VIDEO_ID.match(text):
+        tokens = [text]
+    urls = []
+    for token in tokens:
+        token = token.rstrip(".,;)]}>»\"'")
+        if collection_url(token):
+            continue
+        url = clean_url(token)
+        if "watch?v=" in url and url not in urls:
+            urls.append(url)
+    return urls
+
+
 def _app_dir():
     if getattr(sys, "frozen", False):
         return os.path.dirname(sys.executable)

@@ -45,10 +45,17 @@ class InstallError(Exception):
     pass
 
 
+class InstallCancelled(InstallError):
+    def __init__(self):
+        super().__init__("скасовано")
+
+
 _lock = threading.Lock()
 _done = threading.Event()
 _done.set()
-_state = {"running": False, "fraction": None, "text": "", "error": "", "path": None}
+_cancel = threading.Event()
+_state = {"running": False, "fraction": None, "text": "", "error": "", "path": None,
+          "cancelled": False}
 
 
 def status():
@@ -70,10 +77,20 @@ def start():
     with _lock:
         if _state["running"]:
             return False
-        _state.update(running=True, fraction=0.0, text="Підготовка…", error="", path=None)
+        _state.update(running=True, fraction=0.0, text="Підготовка…", error="", path=None,
+                      cancelled=False)
+        _cancel.clear()
         _done.clear()
     threading.Thread(target=_run, daemon=True).start()
     return True
+
+
+def cancel():
+    """Перериває встановлення на найближчому мегабайті; тимчасове прибирається."""
+    if in_progress():
+        _cancel.set()
+        return True
+    return False
 
 
 def _set(**values):
@@ -83,8 +100,11 @@ def _set(**values):
 
 def _run():
     try:
-        path = install(lambda fraction, text: _set(fraction=fraction, text=text))
+        path = install(lambda fraction, text: _set(fraction=fraction, text=text), _cancel)
         _set(path=path, text="ffmpeg встановлено")
+    except InstallCancelled:
+        applog.info("Встановлення ffmpeg скасовано")
+        _set(cancelled=True, error="")
     except Exception as exc:
         applog.error("Встановлення ffmpeg не вдалося", exc)
         _set(error=str(exc) or type(exc).__name__)
@@ -111,12 +131,14 @@ def parse_checksum(text, filename=None):
     raise InstallError("у файлі контрольних сум немає потрібного архіву")
 
 
-def _download(url, dest, expected_sha, progress, label):
+def _download(url, dest, expected_sha, progress, label, cancel=None):
     digest = hashlib.sha256()
     with _open(url, timeout=120) as resp, open(dest, "wb") as out:
         total = int(resp.headers.get("Content-Length") or 0)
         done = 0
         while True:
+            if cancel is not None and cancel.is_set():
+                raise InstallCancelled()
             chunk = resp.read(CHUNK)
             if not chunk:
                 break
@@ -157,9 +179,10 @@ def check_ffmpeg(path):
         raise InstallError("ffmpeg не запускається")
 
 
-def install(progress=lambda fraction, text: None):
+def install(progress=lambda fraction, text: None, cancel=None):
     """Ставить ffmpeg у BIN_DIR і повертає шлях до ffmpeg.exe. Пробує
-    джерела по черзі: корпоративна мережа може не пускати до одного з них."""
+    джерела по черзі: корпоративна мережа може не пускати до одного з них.
+    cancel — threading.Event; скасування не переходить до наступного джерела."""
     os.makedirs(os.path.dirname(BIN_DIR), exist_ok=True)
     errors = []
     for label, url, sums_url, filename in SOURCES:
@@ -169,7 +192,9 @@ def install(progress=lambda fraction, text: None):
             with _open(sums_url) as resp:
                 expected = parse_checksum(resp.read().decode("utf-8", "replace"), filename)
             archive = os.path.join(work, "ffmpeg.zip")
-            _download(url, archive, expected, progress, label)
+            _download(url, archive, expected, progress, label, cancel=cancel)
+            if cancel is not None and cancel.is_set():
+                raise InstallCancelled()
             progress(None, "Розпакування ffmpeg…")
             staged = os.path.join(work, "bin")
             os.makedirs(staged)
@@ -180,6 +205,8 @@ def install(progress=lambda fraction, text: None):
             path = os.path.join(BIN_DIR, "ffmpeg.exe")
             applog.info(f"ffmpeg встановлено з {label} у {BIN_DIR}")
             return path
+        except InstallCancelled:
+            raise
         except Exception as exc:
             applog.warning(f"ffmpeg з {label} не встановився: {exc}")
             errors.append(f"{label}: {exc}")

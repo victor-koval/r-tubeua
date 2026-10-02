@@ -28,6 +28,50 @@ class Cancelled(DownloadCancelled):
     msg = "Скасовано користувачем"
 
 
+# ── дочірні процеси yt-dlp ───────────────────────────────────────────────
+# ffmpeg (склеювання, субтитри, mp3) і node (JS-челендж YouTube) yt-dlp
+# запускає через свій yt_dlp.utils.Popen і чекає на них блокуючим викликом.
+# Хуки прогресу в цей час мовчать, тож без цього реєстру «Скасувати» діяло б
+# лише після того, як ffmpeg доробить своє — на 4K-відео це хвилини.
+_children = {}                  # id потоку → {Popen, …}
+_children_lock = threading.Lock()
+
+
+def _track_child_processes():
+    popen = yt_dlp.utils.Popen
+    if getattr(popen, "_rtube_tracked", False):
+        return
+    original_init = popen.__init__
+
+    def tracked_init(self, *args, **kwargs):
+        original_init(self, *args, **kwargs)
+        with _children_lock:
+            procs = _children.setdefault(threading.get_ident(), set())
+            procs.difference_update([p for p in procs if p.poll() is not None])
+            procs.add(self)
+
+    popen.__init__ = tracked_init
+    popen._rtube_tracked = True
+
+
+def kill_children(thread_ident):
+    """Зупиняє ffmpeg/node, запущені yt-dlp з цього потоку. Повертає, скільки вбито."""
+    with _children_lock:
+        procs = list(_children.get(thread_ident, ()))
+    killed = 0
+    for proc in procs:
+        if proc.poll() is None:
+            try:
+                proc.kill()
+                killed += 1
+            except OSError:
+                pass
+    return killed
+
+
+_track_child_processes()
+
+
 def base_opts():
     return {
         "quiet": True,
@@ -55,6 +99,30 @@ def analyze(url):
                 raise DownloadError("За посиланням немає жодного відео")
             info = entries[0]
         return ydl.sanitize_info(info)
+
+
+def expand_collection(url):
+    """Плейлист або канал → (назва, [(посилання, назва ролика), …]).
+
+    extract_flat не відкриває кожен ролик, тож навіть канал на 357 відео
+    розгортається за кілька секунд, і назви є одразу.
+    """
+    opts = base_opts()
+    opts.update({"extract_flat": "in_playlist", "noplaylist": False, "skip_download": True})
+    with yt_dlp.YoutubeDL(opts) as ydl:
+        info = ydl.extract_info(url, download=False)
+    entries, seen = [], set()
+    for entry in info.get("entries") or []:
+        if not entry:
+            continue
+        link = tools.clean_url(entry.get("url") or entry.get("webpage_url") or entry.get("id") or "")
+        if "watch?v=" not in link or link in seen:
+            continue        # вкладки каналу, «живі» трансляції без посилання тощо
+        seen.add(link)
+        entries.append((link, entry.get("title") or link))
+    if not entries:
+        raise DownloadError("За посиланням не знайдено жодного відео")
+    return info.get("title") or url, entries
 
 
 # Склеювання тимчасово тримає на диску і частини, і готовий файл.
@@ -161,37 +229,94 @@ def needs_ffmpeg(job, progressive=False):
 
 @dataclass
 class Job:
+    """Одне завантаження.
+
+    Відео, додане через картку, приходить із готовим info і точним вибором
+    (video_key, audio_lang, sub_key). Відео з пакета чи відновленої черги —
+    без info: тоді None у цих полях означає «вирішити після аналізу за prefs».
+    """
     url: str
     title: str
-    info: dict
-    video_key: tuple
-    audio_lang: str
-    audio_label: str
     out_dir: str
+    info: dict = None
+    video_key: tuple = None
+    audio_lang: str = None
+    audio_label: str = ""
     container: str = "mp4"          # mp4 / mkv; для «лише звук» — m4a / mp3
     keep_original: bool = False
-    sub_key: tuple = ()
+    sub_key: tuple = ()             # () — без субтитрів, None — вирішити за prefs
     subs_mode: str = "embed"        # embed / file
+    # max_height: 0 — найкраща, AUDIO_ONLY — лише звук; audio: "uk" / "orig";
+    # subs: "none" / "author_uk"
+    prefs: dict = field(default_factory=dict)
     id: int = field(default_factory=lambda: next(_job_ids))
     state: str = "queued"           # queued / running / done / error / cancelled
     filepath: str = ""
+    keep_partial: bool = False      # при скасуванні лишити .part, щоб докачати потім
     cancel_event: threading.Event = field(default_factory=threading.Event)
 
     @property
     def audio_only(self):
-        return bool(self.video_key) and self.video_key[0] == formats.AUDIO_ONLY
+        if self.video_key:
+            return self.video_key[0] == formats.AUDIO_ONLY
+        return self.prefs.get("max_height") == formats.AUDIO_ONLY
 
     def summary(self):
         parts = []
         if self.audio_only:
             parts.append(f"лише звук, {self.container}")
-        else:
+        elif self.video_key:
             parts.append(f"{self.video_key[0]}p, {self.container}")
+        else:
+            limit = self.prefs.get("max_height")
+            parts.append((f"до {limit}p" if limit else "найкраща якість") + f", {self.container}")
         if self.audio_label:
             parts.append(self.audio_label)
+        elif self.audio_lang is None:
+            parts.append("українська, якщо є" if self.prefs.get("audio", "uk") == "uk"
+                         else "оригінальна доріжка")
         if self.sub_key:
             parts.append(f"субтитри {self.sub_key[0].removesuffix('-orig')}")
         return "  ·  ".join(parts)
+
+    def clone(self):
+        """Нове завдання з тими самими параметрами — для «Повторити»."""
+        return Job(url=self.url, title=self.title, out_dir=self.out_dir, info=self.info,
+                   video_key=self.video_key, audio_lang=self.audio_lang,
+                   audio_label=self.audio_label, container=self.container,
+                   keep_original=self.keep_original, sub_key=self.sub_key,
+                   subs_mode=self.subs_mode, prefs=dict(self.prefs))
+
+
+def apply_prefs(job, info):
+    """Заповнює невирішені поля завдання за prefs — тими ж правилами, що й
+    картка відео: якість не вища за ліміт, українська доріжка, якщо є,
+    субтитри від автора лише тоді, коли української доріжки немає."""
+    prefs = job.prefs
+    limit = prefs.get("max_height")
+    preferred = "orig" if prefs.get("audio") == "orig" else "uk"
+    choices = formats.build_choices(info, limit if isinstance(limit, int) else 0, preferred)
+    if job.video_key is None:
+        if limit == formats.AUDIO_ONLY:
+            job.video_key = (formats.AUDIO_ONLY,)
+        elif choices.videos:
+            job.video_key = choices.videos[choices.default_video].key
+        else:
+            raise DownloadError("У ролику не знайдено жодного відеоформату")
+    if job.audio_lang is None:
+        audio = choices.audios[choices.default_audio] if choices.audios else None
+        job.audio_lang = audio.lang if audio else ""
+        job.audio_label = audio.label if audio else ""
+    if job.sub_key is None:
+        job.sub_key = ()
+        audio_is_uk = formats.base_lang(job.audio_lang) == "uk"
+        if prefs.get("subs") == "author_uk" and not audio_is_uk and not job.audio_only:
+            job.sub_key = next((s.key for s in choices.subs
+                                if s.key and not s.key[1] and formats.base_lang(s.key[0]) == "uk"),
+                               ())
+    if job.keep_original:
+        orig = formats.original_lang(info)
+        job.keep_original = orig is not None and orig != job.audio_lang and not job.audio_only
 
 
 class DownloadManager:
@@ -205,6 +330,7 @@ class DownloadManager:
         self.events = queue.Queue()
         self._jobs = queue.Queue()
         self._running = None
+        self._worker_ident = None
         self._thread = threading.Thread(target=self._worker, daemon=True)
         self._thread.start()
 
@@ -216,16 +342,26 @@ class DownloadManager:
         """Чи качається щось просто зараз (для коректного закриття вікна)."""
         return self._running is not None
 
-    def cancel(self, job):
+    def cancel(self, job, keep_partial=False):
+        """Скасовує завдання. keep_partial — лишити недокачане, щоб продовжити
+        після перезапуску (див. queuestore)."""
+        job.keep_partial = keep_partial
         job.cancel_event.set()
         if job.state == "queued":
             job.state = "cancelled"
             self._emit("state", job, "cancelled", "Скасовано")
+        elif job is self._running and self._worker_ident is not None:
+            # Якщо зараз працює ffmpeg чи node — зупиняємо їх одразу, а не
+            # чекаємо, поки вони доробять (yt-dlp тоді кине помилку, яку
+            # _Runner.run перетворить на скасування).
+            if kill_children(self._worker_ident):
+                applog.info(f"Скасування «{job.title}»: зупинено ffmpeg/node")
 
     def _emit(self, kind, job, *payload):
         self.events.put((kind, job.id, payload))
 
     def _worker(self):
+        self._worker_ident = threading.get_ident()
         while True:
             job = self._jobs.get()
             if job.cancel_event.is_set():
@@ -408,21 +544,45 @@ class _Runner:
 
     # ── запуск ──
     def run(self):
+        try:
+            return self._run()
+        except AlreadyHave as have:
+            self.job.filepath = have.path
+            return ALREADY_NOTE
+        except Exception as exc:
+            # Під час скасування падає будь-що: вбитий ffmpeg, перерваний
+            # node, наш Cancelled із хука. Усе це — скасування, не помилка.
+            if self.job.cancel_event.is_set():
+                if not self.job.keep_partial:
+                    self._cleanup()
+                if isinstance(exc, Cancelled):
+                    raise
+                raise Cancelled() from exc
+            raise
+
+    def _prepare(self):
+        """Аналіз і вибір для завдань із пакета чи відновленої черги."""
+        job = self.job
+        if job.info is None:
+            self.emit("progress", job, None, "Аналіз…")
+            job.info = analyze(job.url)
+            job.title = job.info.get("title") or job.title
+        if job.video_key is None or job.audio_lang is None or job.sub_key is None:
+            apply_prefs(job, job.info)
+        self.emit("meta", job, job.title, job.summary())
+        if job.cancel_event.is_set():
+            raise Cancelled()
+
+    def _run(self):
         job = self.job
         os.makedirs(job.out_dir, exist_ok=True)
         note = ""
+        self._prepare()
         try:
             info = self._download(job.info, with_subs=True)
-        except AlreadyHave as have:
-            job.filepath = have.path
-            return ALREADY_NOTE
-        except Cancelled:
-            self._cleanup()
-            raise
         except DownloadError as exc:
             if job.cancel_event.is_set():
-                self._cleanup()
-                raise Cancelled() from exc
+                raise
             text = str(exc).lower()
             if job.sub_key and "subtitle" in text:
                 # Автопереклад YouTube часто віддає 429 — краще відео без

@@ -161,8 +161,11 @@ def _audio_groups(info):
     for f in info.get("formats") or []:
         if is_audio_only(f):
             groups.setdefault(f.get("language") or "", []).append(f)
+    # «-drc» — версії YouTube зі «стабільною гучністю»: стиснутий динамічний
+    # діапазон, тихе голосніше, гучне тихіше. Беремо їх лише за браком звичайних.
     for fmts in groups.values():
-        fmts.sort(key=lambda f: (_proto_rank(f), -(f.get("abr") or f.get("tbr") or 0)))
+        fmts.sort(key=lambda f: (_proto_rank(f), "drc" in (f.get("format_id") or ""),
+                                 -(f.get("abr") or f.get("tbr") or 0)))
     return groups
 
 
@@ -179,8 +182,12 @@ def _audio_kind(fmts):
 
 
 def build_choices(info, max_height=1080, preferred_lang="uk"):
+    """max_height 0 / None — без обмеження («Найкраща» в налаштуваннях);
+    preferred_lang «orig» — оригінальна доріжка замість української."""
     duration = info.get("duration")
     choices = Choices()
+    if not max_height:
+        max_height = 10 ** 6
 
     # ── відео ──
     groups, progressive = _video_groups(info)

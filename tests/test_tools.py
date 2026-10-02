@@ -6,6 +6,36 @@ from unittest import mock
 from rtube import tools
 
 
+class UrlListTest(unittest.TestCase):
+    def test_several_links_with_text(self):
+        text = ("Ось відео: https://www.youtube.com/watch?v=1zElSYng0Xg&t=4s,\n"
+                "https://youtu.be/pn6mZ0Bcugo?si=x і ще (https://www.youtube.com/shorts/ZNMNKI4xPbY)\n"
+                "повтор https://m.youtube.com/watch?v=1zElSYng0Xg "
+                "плейлист https://www.youtube.com/playlist?list=PL1")
+        self.assertEqual(tools.extract_video_urls(text), [
+            "https://www.youtube.com/watch?v=1zElSYng0Xg",
+            "https://www.youtube.com/watch?v=pn6mZ0Bcugo",
+            "https://www.youtube.com/watch?v=ZNMNKI4xPbY"])
+
+    def test_bare_id(self):
+        self.assertEqual(tools.extract_video_urls("1zElSYng0Xg"),
+                         ["https://www.youtube.com/watch?v=1zElSYng0Xg"])
+
+    def test_collections(self):
+        cases = {
+            "https://www.youtube.com/playlist?list=PL123": "https://www.youtube.com/playlist?list=PL123",
+            "https://www.youtube.com/@Shop": "https://www.youtube.com/@Shop/videos",
+            "youtube.com/@Shop/shorts": "https://www.youtube.com/@Shop/shorts",
+            "https://www.youtube.com/channel/UCx/featured": "https://www.youtube.com/channel/UCx/videos",
+            "https://www.youtube.com/watch?v=1zElSYng0Xg&list=PL123": None,
+            "https://youtu.be/1zElSYng0Xg": None,
+            "https://vimeo.com/123": None,
+            "https://www.youtube.com/@a https://www.youtube.com/@b": None,
+        }
+        for text, expected in cases.items():
+            self.assertEqual(tools.collection_url(text), expected, text)
+
+
 class JsRuntimeTest(unittest.TestCase):
     def probe(self, infos):
         paths = [(name, fr"C:\{name}.exe") for name in infos]

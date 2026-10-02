@@ -3,6 +3,7 @@
 # Запуск:
 #   .\build.ps1                 зібрати з поточною версією
 #   .\build.ps1 -Bump           підняти останнє число (1.0.0 -> 1.0.1) і зібрати
+#   .\build.ps1 -Version 1.1.0  поставити конкретну версію і зібрати
 #   .\build.ps1 -UpdateYtdlp    спершу оновити yt-dlp до свіжої версії
 #   .\build.ps1 -Bump -Release  зібрати й викласти реліз на GitHub
 #   .\build.ps1 -Bump -Release -Notes "Що змінилось"   свій опис замість списку комітів
@@ -12,11 +13,17 @@
 # нова збірка дійшла до колег: .\build.ps1 -UpdateYtdlp -Bump -Release
 
 param(
+    [string]$Version,
     [switch]$Bump,
     [switch]$UpdateYtdlp,
     [switch]$Release,
     [string]$Notes
 )
+
+if ($Version -and $Bump) {
+    Write-Host "-Version і -Bump разом не можна: або конкретна версія, або крок." -ForegroundColor Red
+    exit 1
+}
 
 # НЕ ставимо ErrorActionPreference = "Stop": PyInstaller пише прогрес у stderr,
 # а Windows PowerShell 5.1 у такому режимі перетворює це на термінальну помилку.
@@ -71,6 +78,12 @@ if ($Bump) {
     $parts = $current.Split('.')
     $parts[-1] = [string]([int]$parts[-1] + 1)
     $target = ($parts -join '.')
+} elseif ($Version) {
+    $target = $Version.Trim()
+}
+if ($target -notmatch '^\d+(\.\d+){1,2}$') {
+    Write-Host "Версія має бути виду 1.1 або 1.1.0, а не «$target»." -ForegroundColor Red
+    exit 1
 }
 
 # Тег перевіряємо ДО збірки: інакше хвилина збірки йшла б у смітник через
@@ -130,6 +143,7 @@ Write-Host "Збірка R-TubeUA $target…" -ForegroundColor Cyan
     --copy-metadata yt-dlp `
     --copy-metadata yt-dlp-ejs `
     --hidden-import truststore `
+    --hidden-import pystray._win32 `
     --exclude-module pytest `
     --exclude-module numpy `
     --exclude-module pandas `

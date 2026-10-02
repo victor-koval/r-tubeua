@@ -230,6 +230,17 @@ class InstallTest(ActivateTest):
         self.assertFalse(os.path.exists(os.path.join(self.lib, "2099.1.1")))
         self.assertIsNone(ytupdate.read_current())
 
+    def test_unknown_state_uses_loaded_version(self):
+        # state порожній, але працюючий yt-dlp уже найсвіжіший — нічого не ставимо.
+        ytupdate.state.update(active=None, source="bundled", pending=None)
+        with contextlib.ExitStack() as stack:
+            for p in self.fake_pypi():
+                stack.enter_context(p)
+            stack.enter_context(mock.patch.object(ytupdate, "_loaded_version",
+                                                  return_value="2099.01.01"))
+            self.assertIsNone(ytupdate.check_and_install(force=True))
+        self.assertFalse(os.path.exists(os.path.join(self.lib, "2099.1.1")))
+
     def test_throttled(self):
         self.settings.values["ytdlp_checked_at"] = __import__("time").time()
         with mock.patch.object(ytupdate, "_get_json") as get:
