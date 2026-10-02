@@ -7,6 +7,7 @@
 
 import os
 import threading
+import tkinter
 from tkinter import filedialog, messagebox
 
 import customtkinter as ctk
@@ -39,13 +40,18 @@ class SettingsDialog(ctk.CTkToplevel):
 
     def __init__(self, master, on_change):
         super().__init__(master)
+        # Ховаємо до кінця побудови: CTkToplevel показує себе за 5 мс, і
+        # було видно недобудоване вікно 686×220 не на своєму місці, яке
+        # потім розросталось до повного й переїжджало. Покаже _show().
+        self.withdraw()
         self.on_change = on_change
         self.title("Налаштування — R-TubeUA")
         self.configure(fg_color=uikit.SURFACE_SUNKEN)
-        self.resizable(False, False)
+        # Не self.resizable(): у CTkToplevel він ще раз ховає й показує вікно,
+        # щоб перефарбувати заголовок, — це було друге мигання.
+        tkinter.Toplevel.resizable(self, False, False)
         self.transient(master)
-        # Іконку CTkToplevel ставить сам через 200 мс і перебиває нашу — ставимо після.
-        self.after(250, lambda: uikit.apply_window_icon(self))
+        uikit.apply_window_icon(self)
         self.grid_columnconfigure(0, weight=1)
 
         # Розділи — у прокручуваній області: усе разом ~880 px заввишки й на
@@ -69,7 +75,15 @@ class SettingsDialog(ctk.CTkToplevel):
                               command=self._reset).pack(side="left", padx=(8, 0))
         ctk.CTkButton(footer, text="Готово", width=100, command=self.destroy).pack(side="right")
 
-        self.after(10, self._center_and_grab)
+        # Після того як CTkToplevel відпрацює своє перефарбування заголовка (5–10 мс).
+        self.after(30, self._show)
+
+    def iconbitmap(self, bitmap=None, default=None):
+        # CTkToplevel через 200 мс ставить свою іконку поверх нашої — пропускаємо її,
+        # інакше іконка вікна помітно блимала.
+        if bitmap and "CustomTkinter_icon" in str(bitmap):
+            return None
+        return super().iconbitmap(bitmap, default)
 
     def _fit_height(self):
         """Висота прокручуваної області — уся, якщо влазить, інакше до краю екрана."""
@@ -83,14 +97,32 @@ class SettingsDialog(ctk.CTkToplevel):
         available = (screen_h / scale if screen_h else 760) - 210    # заголовок вікна, кнопки внизу, запас
         self.body.configure(height=max(300, min(inner, available)))
 
-    def _center_and_grab(self):
+    def _show(self):
+        """Розмір і місце — поки вікно сховане, і лише тоді показ: один раз,
+        одразу готове."""
         try:
             self._fit_height()
             self.update_idletasks()
             master = self.master
-            x = master.winfo_rootx() + (master.winfo_width() - self.winfo_width()) // 2
+            # Поки вікно сховане, winfo_width() дає 1 — беремо запитаний розмір.
+            x = master.winfo_rootx() + (master.winfo_width() - self.winfo_reqwidth()) // 2
             y = master.winfo_rooty() + 40
-            self.geometry(f"+{max(0, x)}+{max(0, y)}")
+            # Сирий tk-geometry: позиція в справжніх пікселях, як і winfo_root*.
+            tkinter.Toplevel.geometry(self, f"+{max(0, x)}+{max(0, y)}")
+        except Exception as exc:
+            applog.warning(f"Вікно налаштувань: не вдалося розмістити — {exc}")
+        try:
+            # Темний заголовок CTkToplevel ставив у тому самому повторному
+            # показі, який ми прибрали, — фарбуємо самі, поки вікно сховане
+            # (воно так і лишиться схованим: стан до фарбування — withdrawn).
+            self._windows_set_titlebar_color(self._get_appearance_mode())
+        except Exception:
+            pass
+        self.after(20, self._reveal)
+
+    def _reveal(self):
+        self.deiconify()
+        try:
             self.grab_set()
             self.focus_set()
         except Exception:
