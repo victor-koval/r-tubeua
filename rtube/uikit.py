@@ -224,6 +224,29 @@ def format_eta(seconds):
 KEY_A, KEY_C, KEY_V, KEY_X = 65, 67, 86, 88
 
 
+def wrap_to_width(label, margin=4, minimum=200):
+    """Переносить текст CTkLabel за шириною, яку йому дала сітка.
+
+    Не через label.bind: CTkLabel передає його й внутрішньому tk.Label, а
+    ширина того залежить від уже перенесеного тексту. wraplength тоді щоразу
+    зменшувався, довга назва перескакувала з двох рядків на три й назад, і
+    вікно зависало в нескінченному перерахунку розмітки (ролик bD_nlDO09f4).
+    Зовнішня рамка мітки має ширину клітинки сітки — від тексту вона не залежить.
+    """
+    import tkinter as tk
+
+    def on_configure(event):
+        try:
+            width = label._reverse_widget_scaling(event.width)
+        except Exception:
+            width = event.width
+        width = max(minimum, int(width) - margin)
+        if label.cget("wraplength") != width:
+            label.configure(wraplength=width)
+
+    tk.Misc.bind(label, "<Configure>", on_configure, "+")
+
+
 def bind_text_hotkeys(widget, on_paste=None):
     """Ctrl+C/V/X/A у CTkEntry незалежно від мовної розкладки.
 

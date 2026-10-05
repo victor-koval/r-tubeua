@@ -27,8 +27,7 @@ class BatchCard(uikit.Card):
         self.lbl_title = ctk.CTkLabel(self, text="", font=uikit.FONT_VIDEO_TITLE, anchor="w",
                                       justify="left")
         self.lbl_title.grid(row=0, column=0, sticky="ew", padx=16, pady=(16, 0))
-        self.lbl_title.bind("<Configure>", lambda e: self.lbl_title.configure(
-            wraplength=max(200, e.width - 4)))
+        uikit.wrap_to_width(self.lbl_title)
         self.lbl_preview = ctk.CTkLabel(self, text="", font=FONT_SMALL, anchor="w",
                                         justify="left", text_color=uikit.TEXT_MUTED)
         self.lbl_preview.grid(row=1, column=0, sticky="ew", padx=16, pady=(2, 6))

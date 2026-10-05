@@ -105,8 +105,7 @@ class JobRow(ctk.CTkFrame):
                                                 height=30, command=self._folder)
         self.btn_retry = uikit.SecondaryButton(self.actions, text="↻ Повторити", width=104,
                                                height=30, command=lambda: app.retry(job))
-        self.lbl_title.bind("<Configure>", lambda e: self.lbl_title.configure(
-            wraplength=max(200, e.width - 4)))
+        uikit.wrap_to_width(self.lbl_title)
         if job.state != "queued":
             self.set_state(job.state, job.status)     # рядок створено, коли завдання вже йшло
 
@@ -311,8 +310,7 @@ class RTubeApp(ctk.CTk, *_DND_BASES):
         self.lbl_title = ctk.CTkLabel(head, text="", font=uikit.FONT_VIDEO_TITLE, anchor="w",
                                       justify="left")
         self.lbl_title.grid(row=0, column=0, sticky="ew")
-        self.lbl_title.bind("<Configure>", lambda e: self.lbl_title.configure(
-            wraplength=max(200, e.width - 4)))
+        uikit.wrap_to_width(self.lbl_title)
         self.lbl_meta = ctk.CTkLabel(head, text="", font=FONT_SMALL, anchor="w",
                                      text_color=uikit.TEXT_MUTED)
         self.lbl_meta.grid(row=1, column=0, sticky="ew", pady=(2, 0))
