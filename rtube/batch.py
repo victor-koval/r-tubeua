@@ -10,29 +10,19 @@ prefs, а якість і доріжку завантажувач визнача
 """
 
 from tkinter import ttk
-from urllib.parse import parse_qs, urlparse
 
 import customtkinter as ctk
 
-from . import downloader, formats, settings, uikit
+from . import downloader, formats, settings, tools, uikit
 from .settings_dialog import AUDIO_OPTIONS, QUALITY_OPTIONS, _label_for, _value_for
 from .uikit import FONT_SMALL, FONT_UI_BOLD, GREEN, GREEN_HOVER
 
 AUDIO_ONLY_LABEL = "🎵  Лише звук (без відео)"
 SUBS_OPTIONS = [("Без субтитрів", "none"), ("Українські від автора, якщо є", "author_uk")]
 LIMITS = (10, 25, 50, 100)
-TABLE_ROWS = 7
+TABLE_ROWS = 8          # найбільше; на низькому вікні менше (fit)
 REMOVE = "✕"
 COLUMNS = ("n", "pid", "video", "note", "x")
-
-
-def short_url(url):
-    """https://www.youtube.com/watch?v=pn6mZ0Bcugo → youtu.be/pn6mZ0Bcugo."""
-    parsed = urlparse(url)
-    video_id = (parse_qs(parsed.query).get("v") or [""])[0]
-    if video_id:
-        return f"youtu.be/{video_id}"
-    return (parsed.netloc + parsed.path) or url
 
 
 def describe(entries, busy=(), limit=None):
@@ -47,7 +37,7 @@ def describe(entries, busy=(), limit=None):
     for i, (url, title, pid) in enumerate(entries):
         n = i + 1
         key = (url, pid or "")
-        video = title if title and title != url else short_url(url)
+        video = title if title and title != url else tools.short_url(url)
         note, kind = "", ""
         if limit is not None and i >= limit:
             note, kind = f"поза «Перші {limit}» — не качатиметься", "over"
@@ -70,6 +60,7 @@ class BatchCard(uikit.Card):
         self.entries = []
         self.title_suffix = ""
         self._audio_only = None
+        self.max_rows = TABLE_ROWS
         self.grid_columnconfigure(0, weight=1)
 
         self.lbl_title = ctk.CTkLabel(self, text="", font=uikit.FONT_VIDEO_TITLE, anchor="w",
@@ -92,60 +83,54 @@ class BatchCard(uikit.Card):
             self.tree.heading(col, text=text, anchor=anchor)
             self.tree.column(col, width=width, minwidth=width if not stretch else 120,
                              stretch=stretch, anchor=anchor)
-        self.tree.grid(row=0, column=0, sticky="ew")
-        self.scroll = ctk.CTkScrollbar(table, command=self.tree.yview)
+        self.tree.grid(row=0, column=0, sticky="nsew")
+        # height: інакше CTkScrollbar сам вимагає 200 px і розпирає таблицю.
+        self.scroll = ctk.CTkScrollbar(table, command=self.tree.yview, height=40)
         self.scroll.grid(row=0, column=1, sticky="ns", padx=(4, 0))
         self.tree.configure(yscrollcommand=self.scroll.set)
         self.tree.bind("<Button-1>", self._on_click, add="+")
         self.tree.bind("<Delete>", lambda e: self._remove_selected())
 
+        # Параметри — у дві колонки, а тека — під полем посилання: інакше на
+        # вікні 880×660 кнопка «Завантажити» опинялась за нижнім краєм.
         opts = ctk.CTkFrame(self, fg_color="transparent")
         opts.grid(row=3, column=0, sticky="ew", padx=16)
-        opts.grid_columnconfigure(1, weight=1)
+        opts.grid_columnconfigure(3, weight=1)
 
-        def label(text, row):
-            ctk.CTkLabel(opts, text=text, font=FONT_UI_BOLD, anchor="w", width=130).grid(
-                row=row, column=0, sticky="w", pady=4)
+        def label(text, row, column):
+            ctk.CTkLabel(opts, text=text, font=FONT_UI_BOLD, anchor="w", width=110).grid(
+                row=row, column=column, sticky="w", pady=3, padx=(0 if column == 0 else 24, 0))
 
-        label("Скільки взяти", 0)
-        self.opt_count = ctk.CTkOptionMenu(opts, values=["—"], width=220, dynamic_resizing=False,
-                                           command=lambda _: self._render())
-        self.opt_count.grid(row=0, column=1, sticky="w", pady=4)
-
-        label("Якість", 1)
+        label("Якість", 0, 0)
         self.quality_labels = [lab for lab, _ in QUALITY_OPTIONS] + [AUDIO_ONLY_LABEL]
-        self.opt_quality = ctk.CTkOptionMenu(opts, values=self.quality_labels, width=300,
+        self.opt_quality = ctk.CTkOptionMenu(opts, values=self.quality_labels, width=260,
                                              dynamic_resizing=False,
                                              command=lambda _: self._sync())
-        self.opt_quality.grid(row=1, column=1, sticky="w", pady=4)
+        self.opt_quality.grid(row=0, column=1, sticky="w", pady=3)
 
-        label("Звукова доріжка", 2)
-        self.opt_audio = ctk.CTkOptionMenu(opts, values=[o[0] for o in AUDIO_OPTIONS], width=300,
+        label("Субтитри", 0, 2)
+        self.opt_subs = ctk.CTkOptionMenu(opts, values=[o[0] for o in SUBS_OPTIONS], width=260,
+                                          dynamic_resizing=False)
+        self.opt_subs.grid(row=0, column=3, sticky="w", pady=3)
+
+        label("Доріжка", 1, 0)
+        self.opt_audio = ctk.CTkOptionMenu(opts, values=[o[0] for o in AUDIO_OPTIONS], width=260,
                                            dynamic_resizing=False)
-        self.opt_audio.grid(row=2, column=1, sticky="w", pady=4)
+        self.opt_audio.grid(row=1, column=1, sticky="w", pady=3)
+
+        label("Формат", 1, 2)
+        self.container = ctk.CTkSegmentedButton(opts, values=["mp4", "mkv"], selected_color=GREEN,
+                                                selected_hover_color=GREEN_HOVER)
+        self.container.grid(row=1, column=3, sticky="w", pady=3)
+
+        label("Скільки взяти", 2, 0)
+        self.opt_count = ctk.CTkOptionMenu(opts, values=["—"], width=260, dynamic_resizing=False,
+                                           command=lambda _: self._render())
+        self.opt_count.grid(row=2, column=1, sticky="w", pady=3)
         self.keep_original_var = ctk.BooleanVar()
         self.chk_original = ctk.CTkCheckBox(opts, text="+ оригінал другою доріжкою",
                                             variable=self.keep_original_var, font=FONT_SMALL)
-        self.chk_original.grid(row=2, column=2, sticky="w", padx=(12, 0))
-
-        label("Субтитри", 3)
-        self.opt_subs = ctk.CTkOptionMenu(opts, values=[o[0] for o in SUBS_OPTIONS], width=300,
-                                          dynamic_resizing=False)
-        self.opt_subs.grid(row=3, column=1, sticky="w", pady=4)
-
-        label("Формат файлу", 4)
-        self.container = ctk.CTkSegmentedButton(opts, values=["mp4", "mkv"], selected_color=GREEN,
-                                                selected_hover_color=GREEN_HOVER)
-        self.container.grid(row=4, column=1, sticky="w", pady=4)
-
-        label("Зберегти в", 5)
-        folder = ctk.CTkFrame(opts, fg_color="transparent")
-        folder.grid(row=5, column=1, columnspan=2, sticky="ew", pady=4)
-        folder.grid_columnconfigure(0, weight=1)
-        ctk.CTkEntry(folder, textvariable=app.dir_var, state="readonly").grid(
-            row=0, column=0, sticky="ew")
-        uikit.SecondaryButton(folder, text="Змінити…", width=96,
-                              command=app._choose_dir).grid(row=0, column=1, padx=(8, 0))
+        self.chk_original.grid(row=2, column=2, columnspan=2, sticky="w", padx=(24, 0))
 
         buttons = ctk.CTkFrame(self, fg_color="transparent")
         buttons.grid(row=4, column=0, sticky="ew", padx=16, pady=(6, 14))
@@ -157,6 +142,20 @@ class BatchCard(uikit.Card):
                               command=app.close_batch).grid(row=0, column=1, padx=(8, 0))
 
     # ── таблиця ──
+    def fit(self, rows):
+        """Скільки рядків таблиці показувати — щоб картка влізла у вікно."""
+        self.max_rows = max(3, min(TABLE_ROWS, rows))
+        if self.entries:
+            self._fit_table()
+
+    def _fit_table(self):
+        count = len(self.tree.get_children())
+        self.tree.configure(height=max(1, min(self.max_rows, count)))
+        if count > self.max_rows:
+            self.scroll.grid()
+        else:
+            self.scroll.grid_remove()
+
     def apply_style(self):
         """Кольори таблиці під поточну тему (ttk теми CustomTkinter не бачить)."""
         i = 1 if uikit.is_dark() else 0
@@ -188,12 +187,8 @@ class BatchCard(uikit.Card):
             self.tree.insert("", "end", iid=str(row["n"] - 1), tags=(row["kind"],),
                              values=(row["n"], row["pid"], row["video"], row["note"], REMOVE))
         has_ids = any(r["pid"] for r in rows)
-        self.tree.configure(displaycolumns=COLUMNS if has_ids else ("n", "video", "note", "x"),
-                            height=max(1, min(TABLE_ROWS, len(rows))))
-        if len(rows) > TABLE_ROWS:
-            self.scroll.grid()
-        else:
-            self.scroll.grid_remove()
+        self.tree.configure(displaycolumns=COLUMNS if has_ids else ("n", "video", "note", "x"))
+        self._fit_table()
 
         n = len(self.entries)
         self.lbl_title.configure(text=f"Пакет: {n} відео" +

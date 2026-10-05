@@ -6,7 +6,7 @@ from tkinter import messagebox
 
 import customtkinter as ctk
 
-from . import applog, downloader, report, uikit
+from . import applog, downloader, report, tools, uikit
 from .uikit import FONT_SMALL, FONT_UI, FONT_UI_BOLD, GREEN
 
 ACTIVE = ("queued", "running")
@@ -31,6 +31,23 @@ def _show(widget, visible, **grid):
         widget.grid_remove()
 
 
+def display_title(job):
+    """Назва для рядка: до аналізу ролика з пакета це посилання — коротко."""
+    title = job.title or job.url
+    return tools.short_url(title) if title.startswith("http") else title
+
+
+def row_order(job):
+    """Порядок у списку: що качається — угорі, далі черга в порядку
+    завантаження, внизу завершені (свіжі вище). Раніше нові були просто
+    зверху, і в пакеті поточний ролик губився під десятками «У черзі»."""
+    if job.state == "running":
+        return (0, job.id)
+    if job.state == "queued":
+        return (1, job.id)
+    return (2, -job.id)
+
+
 class JobRow(ctk.CTkFrame):
     """Рядок у списку завантажень: назва, параметри, прогрес, дії."""
 
@@ -41,8 +58,8 @@ class JobRow(ctk.CTkFrame):
         self.fraction = 0.0
         self.grid_columnconfigure(0, weight=1)
 
-        self.lbl_title = ctk.CTkLabel(self, text=job.title, font=FONT_UI_BOLD, anchor="w",
-                                      justify="left")
+        self.lbl_title = ctk.CTkLabel(self, text=display_title(job), font=FONT_UI_BOLD,
+                                      anchor="w", justify="left")
         self.lbl_title.grid(row=0, column=0, sticky="ew", padx=(12, 8), pady=(8, 0))
         meta = ctk.CTkFrame(self, fg_color="transparent")
         meta.grid(row=1, column=0, sticky="ew", padx=(12, 8))
@@ -53,9 +70,12 @@ class JobRow(ctk.CTkFrame):
         self.lbl_duration = uikit.CopyLabel(meta, font=FONT_SMALL, text_color=uikit.STATE_INFO)
         self.lbl_duration.pack(side="left", padx=(10, 0))
         self.refresh_duration()
+        # Смужка — лише коли ролик пішов: у черзі на ній була зелена крапка
+        # «0%», а рядки займали зайве місце.
         self.bar = ctk.CTkProgressBar(self, height=8, progress_color=GREEN)
         self.bar.set(0)
         self.bar.grid(row=2, column=0, sticky="ew", padx=(12, 8), pady=(6, 2))
+        self.bar.grid_remove()
         self.lbl_status = ctk.CTkLabel(self, text="У черзі", font=FONT_SMALL, anchor="w",
                                        text_color=uikit.TEXT_MUTED)
         self.lbl_status.grid(row=3, column=0, sticky="ew", padx=(12, 8), pady=(0, 8))
@@ -78,7 +98,7 @@ class JobRow(ctk.CTkFrame):
 
     def set_meta(self, title, summary):
         """Після відкладеного аналізу: справжня назва й обрана якість/доріжка."""
-        self.lbl_title.configure(text=title)
+        self.lbl_title.configure(text=display_title(self.job))
         self.lbl_summary.configure(text=summary)
         self.refresh_duration()
 
@@ -92,6 +112,7 @@ class JobRow(ctk.CTkFrame):
             self.lbl_duration.set_value("", "")
 
     def set_progress(self, fraction, text):
+        self.bar.grid()
         if fraction is None:
             if self.bar.cget("mode") != "indeterminate":
                 self.bar.configure(mode="indeterminate")
@@ -105,6 +126,8 @@ class JobRow(ctk.CTkFrame):
         self.lbl_status.configure(text=text, text_color=uikit.TEXT_MUTED)
 
     def set_state(self, state, text):
+        if state != "queued" or self.fraction:
+            self.bar.grid()
         colors = {"done": uikit.STATE_OK, "error": uikit.STATE_ERROR,
                   "cancelled": uikit.STATE_WARN, "running": uikit.STATE_INFO}
         self.lbl_status.configure(text=text, text_color=colors.get(state, uikit.TEXT_MUTED))
@@ -160,8 +183,11 @@ class JobsPanel(uikit.Card):
         self.jobs = {}                      # job.id → Job: усе, що в списку
         self.rows = {}                      # job.id → JobRow — не для всіх, див. _materialize
         self.session = set()                # id завдань від останнього «все порожньо»
+        self.compact = False
 
         self.grid_rowconfigure(1, weight=1)
+        # Заголовок і кнопки — двома рядками: в один на 880–1000 px кнопки
+        # налазили на «Завершено: N · ⏱».
         head = ctk.CTkFrame(self, fg_color="transparent")
         head.grid(row=0, column=0, sticky="ew", padx=16, pady=(12, 4))
         head.grid_columnconfigure(0, weight=1)
@@ -173,8 +199,9 @@ class JobsPanel(uikit.Card):
         self.lbl_total = uikit.CopyLabel(title, font=FONT_UI, text_color=uikit.STATE_INFO)
         self.lbl_total.pack(side="left", padx=(16, 0))
         # Кнопки з'являються, коли мають сенс; порядок сталий — колонки сітки.
-        buttons = ctk.CTkFrame(head, fg_color="transparent")
-        buttons.grid(row=0, column=1, sticky="e")
+        self.buttons = buttons = ctk.CTkFrame(head, fg_color="transparent")
+        buttons.grid(row=1, column=0, sticky="w", pady=(6, 0))
+        buttons.grid_remove()       # з'явиться, коли буде хоч одна кнопка (refresh)
         self.btn_pause = uikit.SecondaryButton(buttons, text="⏸ Пауза", width=100, height=28,
                                                command=self.toggle_pause)
         self.btn_cancel_all = ctk.CTkButton(buttons, text="Скасувати все", width=120, height=28,
@@ -184,8 +211,8 @@ class JobsPanel(uikit.Card):
                                                       height=28, command=self.retry_failed)
         self.btn_report = uikit.SecondaryButton(buttons, text="📊 Звіт", width=86, height=28,
                                                 command=self.save_report)
-        uikit.SecondaryButton(buttons, text="Прибрати завершені", width=150, height=28,
-                              command=self.clear_finished).grid(row=0, column=4)
+        self.btn_clear = uikit.SecondaryButton(buttons, text="Прибрати завершені", width=150,
+                                               height=28, command=self.clear_finished)
         self.jobs_list = ctk.CTkScrollableFrame(self, fg_color="transparent")
         self.jobs_list.grid(row=1, column=0, sticky="nsew", padx=8, pady=(0, 10))
         self.jobs_list.grid_columnconfigure(0, weight=1)
@@ -195,6 +222,19 @@ class JobsPanel(uikit.Card):
         self.lbl_empty.grid(row=0, column=0, pady=18)
         self.lbl_more = ctk.CTkLabel(self.jobs_list, text="", font=FONT_SMALL,
                                      text_color=uikit.TEXT_MUTED)
+
+    def set_compact(self, compact):
+        """Поки відкрита картка відео чи пакета — лише заголовок з лічильниками:
+        на невисокому вікні інакше картка не вміщалася й «Завантажити» зникала."""
+        # Свій прапорець: CTkScrollableFrame живе в canvas, і winfo_manager()
+        # у нього завжди «canvas», хоч сховано, хоч ні.
+        if compact == self.compact:
+            return
+        self.compact = compact
+        if compact:
+            self.jobs_list.grid_remove()
+        else:
+            self.jobs_list.grid()
 
     # ── черга ──
     def active_jobs(self):
@@ -315,9 +355,7 @@ class JobsPanel(uikit.Card):
         self._regrid_rows()
 
     def _regrid_rows(self):
-        # Нові зверху: щойно додане завантаження має бути видно одразу.
-        for i, row in enumerate(sorted(self.rows.values(), key=lambda r: -r.job.id)):
-            row.grid(row=i + 1, column=0, sticky="ew", padx=4, pady=4)
+        order = sorted(self.rows.values(), key=lambda r: row_order(r.job))
         hidden = [j for j in self.jobs.values() if j.id not in self.rows]
         waiting = sum(1 for j in hidden if j.state in ACTIVE)
         parts = []
@@ -325,11 +363,21 @@ class JobsPanel(uikit.Card):
             parts.append(f"… і ще {waiting} у черзі — рядки з'являться, коли дійде черга")
         if len(hidden) > waiting:
             parts.append(f"скасовано без рядка: {len(hidden) - waiting} (є у звіті)")
+        # Підпис про приховані — одразу під видимою чергою (це її продовження),
+        # завершені — нижче.
+        widgets = [r for r in order if r.job.state in ACTIVE]
         if parts:
             self.lbl_more.configure(text="  ·  ".join(parts))
-            self.lbl_more.grid(row=0, column=0, pady=(6, 2))
+            widgets.append(self.lbl_more)
         else:
             self.lbl_more.grid_remove()
+        widgets += [r for r in order if r.job.state not in ACTIVE]
+        for i, widget in enumerate(widgets, start=1):
+            if widget.grid_info().get("row") != i:
+                if widget is self.lbl_more:
+                    widget.grid(row=i, column=0, pady=(2, 6))
+                else:
+                    widget.grid(row=i, column=0, sticky="ew", padx=4, pady=4)
         if self.jobs:
             self.lbl_empty.grid_remove()
         else:
@@ -376,7 +424,14 @@ class JobsPanel(uikit.Card):
         _show(self.btn_pause, bool(active) or paused, column=0)
         _show(self.btn_cancel_all, bool(active), column=1)
         _show(self.btn_retry_failed, bool(failed), column=2)
-        _show(self.btn_report, any(j.state in FINISHED for j in self.jobs.values()), column=3)
+        finished = any(j.state in FINISHED for j in self.jobs.values())
+        _show(self.btn_report, finished, column=3)
+        _show(self.btn_clear, finished, column=4)
+        if bool(active) or paused or finished:
+            if not self.buttons.winfo_manager():
+                self.buttons.grid()
+        elif self.buttons.winfo_manager():
+            self.buttons.grid_remove()
         if failed:
             self.btn_retry_failed.configure(text=f"↻ Невдалі ({failed})")
         if active:

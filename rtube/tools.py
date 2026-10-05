@@ -142,6 +142,16 @@ def extract_id_pairs(text):
     return pairs
 
 
+def short_url(url):
+    """https://www.youtube.com/watch?v=pn6mZ0Bcugo → youtu.be/pn6mZ0Bcugo — для таблиць
+    і рядків, поки справжньої назви ролика ще немає."""
+    parsed = urlparse(url)
+    video_id = (parse_qs(parsed.query).get("v") or [""])[0]
+    if video_id:
+        return f"youtu.be/{video_id}"
+    return (parsed.netloc + parsed.path) or url
+
+
 def count_lines_without_links(text):
     """Скільки непорожніх рядків тексту без жодного посилання (шапка таблиці,
     рядок лише з ID…) — щоб сказати, що їх пропущено, а не мовчки загубити."""

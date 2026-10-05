@@ -9,7 +9,7 @@ import customtkinter as ctk
 from . import downloader, formats, settings, tools, uikit
 from .uikit import FONT_SMALL, FONT_UI_BOLD, GREEN, GREEN_HOVER
 
-THUMB_SIZE = (224, 126)
+THUMB_SIZE = (192, 108)
 SUBS_EMBED, SUBS_FILE = "Вшити у відео", "Окремий файл .srt"
 VIDEO_CONTAINERS = ("mp4", "mkv")
 AUDIO_CONTAINERS = ("m4a", "mp3")
@@ -91,17 +91,17 @@ class VideoCard(uikit.Card):
 
         def label(text, row):
             ctk.CTkLabel(opts, text=text, font=FONT_UI_BOLD, anchor="w", width=130).grid(
-                row=row, column=0, sticky="w", pady=4)
+                row=row, column=0, sticky="w", pady=3)
 
         label("Якість", 0)
         self.opt_video = ctk.CTkOptionMenu(opts, values=["—"], dynamic_resizing=False,
                                            command=lambda _: self._on_video_change())
-        self.opt_video.grid(row=0, column=1, sticky="ew", pady=5)
+        self.opt_video.grid(row=0, column=1, sticky="ew", pady=3)
 
         label("Звукова доріжка", 1)
         self.opt_audio = ctk.CTkOptionMenu(opts, values=["—"], dynamic_resizing=False,
                                            command=lambda _: self._sync_controls())
-        self.opt_audio.grid(row=1, column=1, sticky="ew", pady=5)
+        self.opt_audio.grid(row=1, column=1, sticky="ew", pady=3)
         self.keep_original_var = ctk.BooleanVar(value=bool(settings.get("keep_original")))
         self.chk_original = ctk.CTkCheckBox(opts, text="+ оригінал другою доріжкою",
                                             variable=self.keep_original_var, font=FONT_SMALL)
@@ -110,7 +110,7 @@ class VideoCard(uikit.Card):
         label("Субтитри", 2)
         self.opt_subs = ctk.CTkOptionMenu(opts, values=["—"], dynamic_resizing=False,
                                           command=lambda _: self._sync_controls())
-        self.opt_subs.grid(row=2, column=1, sticky="ew", pady=5)
+        self.opt_subs.grid(row=2, column=1, sticky="ew", pady=3)
         self.subs_mode = ctk.CTkSegmentedButton(opts, values=[SUBS_EMBED, SUBS_FILE],
                                                 selected_color=GREEN,
                                                 selected_hover_color=GREEN_HOVER)
@@ -118,7 +118,7 @@ class VideoCard(uikit.Card):
 
         label("Формат файлу", 3)
         box = ctk.CTkFrame(opts, fg_color="transparent")
-        box.grid(row=3, column=1, columnspan=2, sticky="ew", pady=5)
+        box.grid(row=3, column=1, columnspan=2, sticky="ew", pady=3)
         self.container = ctk.CTkSegmentedButton(box, values=list(VIDEO_CONTAINERS),
                                                 selected_color=GREEN,
                                                 selected_hover_color=GREEN_HOVER,
@@ -130,7 +130,7 @@ class VideoCard(uikit.Card):
 
         label("ID товару", 4)
         id_box = ctk.CTkFrame(opts, fg_color="transparent")
-        id_box.grid(row=4, column=1, columnspan=2, sticky="ew", pady=5)
+        id_box.grid(row=4, column=1, columnspan=2, sticky="ew", pady=3)
         self.id_var = ctk.StringVar()
         self.ent_id = ctk.CTkEntry(id_box, textvariable=self.id_var, width=160,
                                    placeholder_text="необов'язково")
@@ -141,21 +141,15 @@ class VideoCard(uikit.Card):
         self.lbl_filename.pack(side="left", padx=(12, 0))
         self.id_var.trace_add("write", lambda *_: self._update_filename_hint())
 
-        label("Зберегти в", 5)
-        folder = ctk.CTkFrame(opts, fg_color="transparent")
-        folder.grid(row=5, column=1, columnspan=2, sticky="ew", pady=5)
-        folder.grid_columnconfigure(0, weight=1)
-        ctk.CTkEntry(folder, textvariable=app.dir_var, state="readonly").grid(
-            row=0, column=0, sticky="ew")
-        uikit.SecondaryButton(folder, text="Змінити…", width=96,
-                              command=app._choose_dir).grid(row=0, column=1, padx=(8, 0))
-        uikit.SecondaryButton(folder, text="📁", width=40,
-                              command=lambda: uikit.open_path(app.dir_var.get())).grid(
-            row=0, column=2, padx=(8, 0))
-
-        self.btn_download = ctk.CTkButton(self, text="⬇  Завантажити", height=44,
+        # Тека — одна на обидві картки, тож вона в рядку під полем посилання.
+        buttons = ctk.CTkFrame(self, fg_color="transparent")
+        buttons.grid(row=2, column=0, columnspan=2, sticky="ew", padx=16, pady=(4, 14))
+        buttons.grid_columnconfigure(0, weight=1)
+        self.btn_download = ctk.CTkButton(buttons, text="⬇  Завантажити", height=44,
                                           font=uikit.FONT_BIG_BUTTON, command=app.download)
-        self.btn_download.grid(row=2, column=0, columnspan=2, sticky="ew", padx=16, pady=(4, 14))
+        self.btn_download.grid(row=0, column=0, sticky="ew")
+        uikit.SecondaryButton(buttons, text="Скасувати", width=110, height=44,
+                              command=app.close_video).grid(row=0, column=1, padx=(8, 0))
 
     # ── показ ──
     def show(self, url, info, choices, thumb, product_id=""):
@@ -277,8 +271,12 @@ class VideoCard(uikit.Card):
         self.opt_audio.configure(state="disabled" if progressive or not self.choices.audios
                                  else "normal")
         self.opt_subs.configure(state="disabled" if audio_only else "normal")
-        self.subs_mode.configure(state="normal" if sub and sub.key and not audio_only
-                                 else "disabled")
+        # Без субтитрів перемикач «вшити / окремим файлом» не має сенсу —
+        # вимкненим він виглядав як обраний «Окремий файл».
+        if sub and sub.key and not audio_only:
+            self.subs_mode.grid()
+        else:
+            self.subs_mode.grid_remove()
         self.lbl_container_hint.configure(text=CONTAINER_HINTS.get(self.container.get(), ""))
         self._update_filename_hint()
 

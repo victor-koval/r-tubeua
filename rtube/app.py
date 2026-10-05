@@ -34,6 +34,8 @@ APP_TITLE = "R-TubeUA"
 APP_VERSION = "1.4.0"
 
 DEFAULT_SIZE = (1000, 800)
+JOBS_MIN_HEIGHT = 170      # список — щонайменше два рядки, поки картка не відкрита
+DIR_SHOWN = 48             # скільки символів шляху до теки показувати під полем
 MIN_SIZE = (880, 660)
 CLOSE_TIMEOUT = 5          # скільки чекати зупинки завантаження при закритті, с
 ERROR_FLASH = 3            # скільки тримати червону смужку в панелі задач після помилки, с
@@ -78,7 +80,7 @@ class RTubeApp(ctk.CTk, *_DND_BASES):
 
         self.grid_columnconfigure(0, weight=1)
         # Черзі — мінімум місця на два рядки, хай навіть вікно низьке.
-        self.grid_rowconfigure(3, weight=1, minsize=170)
+        self.grid_rowconfigure(3, weight=1, minsize=JOBS_MIN_HEIGHT)
         self._build_header()
         self._build_url_card()
         self.video_card = VideoCard(self, self)
@@ -89,6 +91,7 @@ class RTubeApp(ctk.CTk, *_DND_BASES):
         self.statusbar.grid(row=4, column=0, sticky="ew", padx=24, pady=(0, 8))
 
         self._init_drop()
+        self.bind("<Configure>", lambda e: e.widget is self and self.after_idle(self._fit_cards))
         self.protocol("WM_DELETE_WINDOW", self.on_closing)
         self.after(100, self._poll)
         self.after(50, lambda: self.ent_url.focus_set())
@@ -108,7 +111,8 @@ class RTubeApp(ctk.CTk, *_DND_BASES):
     # ── побудова ──────────────────────────────────────────────────────────
     def _build_header(self):
         """Чорна шапка з зеленим акцентом — як у rozetka.com.ua і сусідніх програм."""
-        header = ctk.CTkFrame(self, fg_color=uikit.HEADER_BG, corner_radius=0, height=60)
+        header = self._header = ctk.CTkFrame(self, fg_color=uikit.HEADER_BG, corner_radius=0,
+                                             height=60)
         header.grid(row=0, column=0, sticky="ew")
         header.grid_columnconfigure(2, weight=1)
         ctk.CTkLabel(header, text="R-TUBE", font=uikit.FONT_BRAND, text_color=GREEN).grid(
@@ -127,11 +131,11 @@ class RTubeApp(ctk.CTk, *_DND_BASES):
                       **style).grid(row=0, column=4, padx=(0, 22))
 
     def _build_url_card(self):
-        card = uikit.Card(self)
+        card = self._url_card = uikit.Card(self)
         card.grid(row=1, column=0, sticky="ew", padx=22, pady=(18, 10))
         card.grid_columnconfigure(0, weight=1)
         row = ctk.CTkFrame(card, fg_color="transparent")
-        row.grid(row=0, column=0, sticky="ew", padx=16, pady=(14, 4))
+        row.grid(row=0, column=0, columnspan=2, sticky="ew", padx=16, pady=(14, 4))
         row.grid_columnconfigure(0, weight=1)
 
         self.ent_url = ctk.CTkEntry(row, height=38, font=FONT_UI,
@@ -154,6 +158,24 @@ class RTubeApp(ctk.CTk, *_DND_BASES):
                                                     "Файл зі списком можна перетягнути у вікно.",
                                          font=FONT_SMALL, text_color=uikit.TEXT_MUTED, anchor="w")
         self.lbl_url_hint.grid(row=1, column=0, sticky="ew", padx=18, pady=(0, 10))
+
+        # Куди зберігати — одне на картку відео й пакета, тож тут, а не в кожній.
+        folder = ctk.CTkFrame(card, fg_color="transparent")
+        folder.grid(row=1, column=1, sticky="e", padx=(8, 16), pady=(0, 10))
+        self.lbl_dir = ctk.CTkLabel(folder, text="", font=FONT_SMALL, cursor="hand2",
+                                    text_color=uikit.TEXT_MUTED)
+        self.lbl_dir.pack(side="left")
+        self.lbl_dir.bind("<Button-1>", lambda e: uikit.open_path(self.dir_var.get()))
+        uikit.SecondaryButton(folder, text="Змінити…", width=80, height=24, font=FONT_SMALL,
+                              command=self._choose_dir).pack(side="left", padx=(8, 0))
+        self.dir_var.trace_add("write", lambda *_: self._show_dir())
+        self._show_dir()
+
+    def _show_dir(self):
+        path = self.dir_var.get()
+        if len(path) > DIR_SHOWN:
+            path = path[:12] + "…" + path[-(DIR_SHOWN - 13):]
+        self.lbl_dir.configure(text=f"📁 {path}")
 
     def hint(self, text, color=uikit.TEXT_MUTED):
         self.lbl_url_hint.configure(text=text, text_color=color)
@@ -377,18 +399,16 @@ class RTubeApp(ctk.CTk, *_DND_BASES):
         if not choices.videos:
             self.hint("У ролику не знайдено жодного відео- чи аудіоформату", uikit.STATE_ERROR)
             return
-        self.batch_card.grid_remove()
         self.video_card.show(url, info, choices, thumb, self._pending_id)
         self._pending_id = ""
         self.hint("Готово — перевірте параметри й натисніть «Завантажити»", uikit.STATE_OK)
-        self.video_card.grid(row=2, column=0, sticky="ew", padx=22, pady=(0, 10))
+        self._show_card(self.video_card)
 
     def _show_batch(self, title, entries):
         self._set_analyzing(False)
-        self.video_card.grid_remove()
         self.video_card.clear()
         self.batch_card.show(title, entries)
-        self.batch_card.grid(row=2, column=0, sticky="ew", padx=22, pady=(0, 10))
+        self._show_card(self.batch_card)
         self.hint(f"Знайдено {len(entries)} відео — оберіть параметри для всіх одразу",
                   uikit.STATE_OK)
 
@@ -418,9 +438,47 @@ class RTubeApp(ctk.CTk, *_DND_BASES):
         self.hint("  ·  ".join(parts), uikit.STATE_OK)
 
     def close_batch(self):
-        self.batch_card.grid_remove()
+        self._show_card(None)
         self.hint("Пакет скасовано", uikit.STATE_WARN)
         self._ready_for_next()
+
+    def close_video(self):
+        self.video_card.clear()
+        self._show_card(None)
+        self.hint("Відео не додано", uikit.STATE_WARN)
+        self._ready_for_next()
+
+    def _show_card(self, card):
+        """Одна картка (відео чи пакета) або жодної. Поки картка відкрита,
+        список завантажень згорнутий до заголовка — інакше на невисокому
+        вікні картка не вміщалась і кнопка «Завантажити» зникала за краєм."""
+        for other in (self.video_card, self.batch_card):
+            if other is not card:
+                other.grid_remove()
+        if card is not None:
+            card.grid(row=2, column=0, sticky="ew", padx=22, pady=(0, 10))
+        self.jobs_panel.set_compact(card is not None)
+        self.grid_rowconfigure(3, minsize=0 if card is not None else JOBS_MIN_HEIGHT)
+        if card is self.batch_card:
+            self.after_idle(self._fit_cards)
+
+    def _fit_cards(self):
+        """Таблиця пакета — стільки рядків, скільки влазить у вікно."""
+        if not self.batch_card.winfo_manager():
+            return
+        self.update_idletasks()
+        tree = self.batch_card.tree
+        row_px = 24
+        shown = int(tree.cget("height"))
+        heading = max(0, tree.winfo_reqheight() - shown * row_px)
+        others = sum(w.winfo_reqheight() for w in (self._header, self._url_card, self.jobs_panel,
+                                                    self.statusbar))
+        paddings = 28 + 10 + 10 + 8 + 12
+        card_fixed = self.batch_card.winfo_reqheight() - tree.winfo_reqheight()
+        free = self.winfo_height() - others - paddings - card_fixed - heading
+        rows = free // row_px
+        if rows != shown or rows < len(tree.get_children()):
+            self.batch_card.fit(rows)
 
     def _ready_for_next(self):
         self.ent_url.delete(0, "end")
@@ -464,8 +522,8 @@ class RTubeApp(ctk.CTk, *_DND_BASES):
                   uikit.STATE_OK)
         # Картку ховаємо: відео вже в черзі, а місце потрібне списку
         # завантажень. Наступне посилання покаже її знову.
-        self.video_card.grid_remove()
         self.video_card.clear()
+        self._show_card(None)
         self._ready_for_next()
 
     def download_batch(self):
@@ -480,7 +538,7 @@ class RTubeApp(ctk.CTk, *_DND_BASES):
         if skipped:
             text += f" (ще {skipped} вже були в черзі)"
         self.hint(text, uikit.STATE_OK)
-        self.batch_card.grid_remove()
+        self._show_card(None)
         self._ready_for_next()
 
     def enqueue(self, jobs):

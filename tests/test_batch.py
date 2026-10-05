@@ -11,10 +11,10 @@ C = "https://www.youtube.com/watch?v=ZNMNKI4xPbY"
 
 class ShortUrlTest(unittest.TestCase):
     def test_watch(self):
-        self.assertEqual(batch.short_url(A), "youtu.be/pn6mZ0Bcugo")
+        self.assertEqual(tools.short_url(A), "youtu.be/pn6mZ0Bcugo")
 
     def test_other(self):
-        self.assertEqual(batch.short_url("https://example.com/x"), "example.com/x")
+        self.assertEqual(tools.short_url("https://example.com/x"), "example.com/x")
 
 
 class DescribeTest(unittest.TestCase):
