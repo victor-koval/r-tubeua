@@ -9,3 +9,5 @@ truststore==0.10.4
 yt-dlp[default]==2026.8.19
 # Сповіщення Windows (як трей у Splitter_auto).
 pystray==0.19.5
+# Списки «ID товару — посилання» з Excel (як в Інспекторі Гаджеті).
+openpyxl==3.1.5

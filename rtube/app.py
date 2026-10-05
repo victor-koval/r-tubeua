@@ -11,8 +11,8 @@ from tkinter import filedialog, messagebox
 
 import customtkinter as ctk
 
-from . import (applog, downloader, ffinstall, formats, notify, queuestore, settings, taskbar,
-               tools, uikit, ytupdate)
+from . import (applog, downloader, ffinstall, formats, notify, queuestore, settings, sheets,
+               taskbar, tools, uikit, ytupdate)
 from .uikit import FONT_SMALL, FONT_UI, FONT_UI_BOLD, GREEN, GREEN_HOVER
 
 APP_TITLE = "R-TubeUA"
@@ -257,9 +257,11 @@ class RTubeApp(ctk.CTk):
 
         uikit.SecondaryButton(row, text="Вставити", width=96, height=38,
                               command=self.paste_and_analyze).grid(row=0, column=1, padx=(8, 0))
+        uikit.SecondaryButton(row, text="📄 З файлу…", width=110, height=38,
+                              command=self.open_list_file).grid(row=0, column=2, padx=(8, 0))
         self.btn_analyze = ctk.CTkButton(row, text="Аналізувати", width=130, height=38,
                                          font=FONT_UI_BOLD, command=self.analyze)
-        self.btn_analyze.grid(row=0, column=2, padx=(8, 0))
+        self.btn_analyze.grid(row=0, column=3, padx=(8, 0))
 
         self.lbl_url_hint = ctk.CTkLabel(card, text="Після вставки посилання аналіз "
                                                     "запускається сам. Enter — теж.",
@@ -523,6 +525,43 @@ class RTubeApp(ctk.CTk):
         self.ent_url.delete(0, "end")
         self.ent_url.insert(0, text)
         self.analyze()
+
+    def open_list_file(self):
+        """Таблиця «ID товару — посилання» (xlsx, csv, txt) → картка пакета."""
+        path = filedialog.askopenfilename(
+            parent=self, title="Файл зі списком відео",
+            filetypes=[("Таблиці й списки", "*.xlsx *.xlsm *.csv *.txt"),
+                       ("Excel", "*.xlsx *.xlsm"), ("CSV", "*.csv"), ("Усі файли", "*.*")])
+        if not path:
+            return
+        name = os.path.basename(path)
+
+        def work(token):
+            try:
+                result = sheets.read_pairs(path)
+                self.ui_events.put(("file_read", token, name, result))
+            except Exception as exc:
+                applog.error(f"Не вдалося прочитати {path}", exc)
+                text = str(exc) if isinstance(exc, ValueError) else \
+                    f"Не вдалося прочитати {name}: {exc}"
+                if isinstance(exc, PermissionError):
+                    text = f"{name} відкритий в іншій програмі — закрийте його в Excel і спробуйте ще раз"
+                self.ui_events.put(("analyze_error", token, text))
+
+        self.ent_url.delete(0, "end")
+        self._start_background(work, f"Читаю {name}…")
+
+    def _show_file_batch(self, name, result):
+        entries = [(url, url, pid or "") for pid, url in result.pairs]
+        self._show_batch(f"з файлу {name}", entries)
+        parts = [f"{name}: {len(entries)} відео"]
+        if result.with_ids < len(entries):
+            parts.append(f"з ID — {result.with_ids}, решта назвуться латиницею")
+        if result.skipped:
+            parts.append(f"рядків без посилання пропущено: {result.skipped}")
+        if result.sheet and result.sheet != name:
+            parts.append(f"аркуш «{result.sheet}»")
+        self._hint("  ·  ".join(parts), uikit.STATE_OK)
 
     def _set_analyzing(self, on):
         """Під час аналізу «Аналізувати» стає «Скасувати»."""
@@ -1012,6 +1051,8 @@ class RTubeApp(ctk.CTk):
                     self._show_info(*event[2:])
                 elif kind == "expanded" and event[1] == self._analyze_token:
                     self._show_batch(*event[2:])
+                elif kind == "file_read" and event[1] == self._analyze_token:
+                    self._show_file_batch(*event[2:])
                 elif kind == "analyze_error" and event[1] == self._analyze_token:
                     self._set_analyzing(False)
                     self._hint(event[2], uikit.STATE_ERROR)
