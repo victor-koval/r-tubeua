@@ -6,7 +6,15 @@
 #   .\build.ps1 -Version 1.1.0  поставити конкретну версію і зібрати
 #   .\build.ps1 -UpdateYtdlp    спершу оновити yt-dlp до свіжої версії
 #   .\build.ps1 -Bump -Release  зібрати й викласти реліз на GitHub
-#   .\build.ps1 -Bump -Release -Notes "Що змінилось"   свій опис замість списку комітів
+#                               (опис — з release_notes\vX.Y.Z.md, див. нижче)
+#   .\build.ps1 -Bump -Release -Notes шлях.md          опис з іншого файлу
+#   .\build.ps1 -Bump -Release -Notes "Що змінилось"   опис одним рядком
+#
+# Опис релізу пишемо для колег, а не з заголовків комітів: там внутрішня
+# кухня («Розділено app.py», «Димовий тест»), а з 1.4.0 колеги бачать реліз
+# через самооновлення. Тож: release_notes\vX.Y.Z.md (як попередні), коміт,
+# потім -Release. Без опису реліз не випускається — це перевіряється ДО збірки.
+# yt-dlp і примітку про встановлення скрипт допише сам.
 #
 # yt-dlp вшивається в .exe, тож коли YouTube щось змінить і завантаження
 # перестануть працювати, лікується це перезбіркою з -UpdateYtdlp — а щоб
@@ -94,6 +102,23 @@ if ($Release) {
         Write-Host "Тег $tag уже існує. Додайте -Bump або приберіть тег." -ForegroundColor Red
         exit 1
     }
+    $notesPath = Join-Path $root "release_notes\$tag.md"
+    $releaseNotes = ""
+    if ($Notes -and (Test-Path $Notes)) {
+        $releaseNotes = [System.IO.File]::ReadAllText((Resolve-Path $Notes), [System.Text.Encoding]::UTF8)
+    } elseif ($Notes) {
+        $releaseNotes = $Notes
+    } elseif (Test-Path $notesPath) {
+        $releaseNotes = [System.IO.File]::ReadAllText($notesPath, [System.Text.Encoding]::UTF8)
+    }
+    if (-not $releaseNotes.Trim()) {
+        $previous = git -C $root describe --tags --abbrev=0 HEAD 2>$null
+        Write-Host "Немає опису релізу $tag." -ForegroundColor Red
+        Write-Host "Напишіть release_notes\$tag.md — що змінилось для колег (див. попередні файли там же)," -ForegroundColor Yellow
+        Write-Host "закомітьте й запустіть знову. Коміти від $previous для підказки:" -ForegroundColor Yellow
+        git -C $root log "$previous..HEAD" --format="  - %s"
+        exit 1
+    }
 }
 
 function Set-AppVersion([string]$value) {
@@ -171,21 +196,8 @@ Write-Host "Готово: $exe — версія $target ($size МБ)" -Foregroun
 if (-not $Release) { return }
 
 # ─────────────────────────────────────────────────────────── реліз на GitHub
-# Опис збираємо із заголовків комітів від попереднього тега — писати його
-# руками щоразу ніхто не буде, а «що змінилося» питають завжди.
-$previous = git -C $root describe --tags --abbrev=0 HEAD 2>$null
-if ($Notes) {
-    $body = $Notes
-} elseif ($previous) {
-    $subjects = git -C $root log "$previous..HEAD" --format="- %s"
-    if ($subjects) {
-        $body = "Зміни від $previous" + "`n`n" + ($subjects -join "`n")
-    } else {
-        $body = "Перезбірка без змін у коді (зокрема свіжий yt-dlp)."
-    }
-} else {
-    $body = "Версія $target"
-}
+# Опис — з release_notes\vX.Y.Z.md або -Notes (перевірено ще до збірки).
+$body = $releaseNotes.Trim()
 $ytdlp = & $python -c "import yt_dlp.version as v; print(v.__version__)"
 $body += "`n`nyt-dlp $ytdlp"
 $body += "`n`n---`n`nУстановлення не потрібне — один файл. ffmpeg програма за потреби " +
