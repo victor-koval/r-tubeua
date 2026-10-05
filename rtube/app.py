@@ -11,8 +11,16 @@ from tkinter import filedialog, messagebox
 
 import customtkinter as ctk
 
-from . import (applog, downloader, ffinstall, formats, notify, queuestore, settings, sheets,
-               taskbar, tools, uikit, ytupdate)
+try:
+    # Перетягування файлів у вікно. Без бібліотеки програма працює як раніше.
+    from tkinterdnd2 import DND_FILES, DND_TEXT, TkinterDnD
+    _DND_BASES = (TkinterDnD.DnDWrapper,)
+except Exception:
+    TkinterDnD = None
+    _DND_BASES = ()
+
+from . import (applog, downloader, ffinstall, formats, notify, queuestore, report, settings,
+               sheets, taskbar, tools, uikit, ytupdate)
 from .uikit import FONT_SMALL, FONT_UI, FONT_UI_BOLD, GREEN, GREEN_HOVER
 
 APP_TITLE = "R-TubeUA"
@@ -23,6 +31,11 @@ MIN_SIZE = (880, 660)
 THUMB_SIZE = (224, 126)
 CLOSE_TIMEOUT = 5          # скільки чекати зупинки завантаження при закритті, с
 ERROR_FLASH = 3            # скільки тримати червону смужку в панелі задач після помилки, с
+CLIPBOARD_EVERY = 7        # буфер обміну перевіряємо кожне 7-ме опитування (~0,7 с)
+# Рядок-віджет — ~25 мс на створення й розкладку: канал на 300 відео заморожував
+# вікно на 7 секунд. Тож рядки є в завершених, поточного й лише найближчих у
+# черзі; решта — одним підписом «… і ще N у черзі», рядки з'являються по ходу.
+QUEUED_ROWS = 20
 
 THEME_LIGHT, THEME_DARK, THEME_SYSTEM = "Світла", "Темна", "Системна"
 THEMES = {THEME_LIGHT: "Light", THEME_DARK: "Dark", THEME_SYSTEM: "System"}
@@ -94,6 +107,8 @@ class JobRow(ctk.CTkFrame):
                                                height=30, command=lambda: app.retry(job))
         self.lbl_title.bind("<Configure>", lambda e: self.lbl_title.configure(
             wraplength=max(200, e.width - 4)))
+        if job.state != "queued":
+            self.set_state(job.state, job.status)     # рядок створено, коли завдання вже йшло
 
     def set_meta(self, title, summary):
         """Після відкладеного аналізу: справжня назва й обрана якість/доріжка."""
@@ -148,6 +163,11 @@ class JobRow(ctk.CTkFrame):
             self.bar.configure(mode="determinate")
             self.fraction = 0.0
             self.bar.set(0)
+        elif state == "queued":
+            # Після паузи: смужка не має крутитись, наче щось качається.
+            self.bar.stop()
+            self.bar.configure(mode="determinate")
+            self.bar.set(self.fraction)
 
     def _open(self):
         path = self.job.filepath
@@ -164,7 +184,7 @@ class JobRow(ctk.CTkFrame):
             uikit.open_path(self.job.out_dir)
 
 
-class RTubeApp(ctk.CTk):
+class RTubeApp(ctk.CTk, *_DND_BASES):
     def __init__(self):
         super().__init__()
         scale = uikit.fit_scaling(self._window_scale())
@@ -180,7 +200,8 @@ class RTubeApp(ctk.CTk):
 
         self.manager = downloader.DownloadManager()
         self.ui_events = queue.Queue()     # результати аналізу з фонових потоків
-        self.rows = {}                      # job.id → JobRow
+        self.jobs = {}                      # job.id → Job: усе, що в списку
+        self.rows = {}                      # job.id → JobRow — не для всіх, див. _materialize
         self.info = None
         self.choices = None
         self._analyze_token = 0
@@ -193,6 +214,8 @@ class RTubeApp(ctk.CTk):
         self._settings_window = None
         self._pending_id = ""                # ID товару з рядка «ID посилання» для картки
         self.taskbar = None
+        self._polls = 0
+        self._clip_last = self._read_clipboard()     # що було до старту — не підхоплюємо
 
         self.grid_columnconfigure(0, weight=1)
         # Черзі — мінімум місця на два рядки, хай навіть вікно низьке.
@@ -205,6 +228,7 @@ class RTubeApp(ctk.CTk):
         self._build_jobs_card()
         self._build_statusbar()
 
+        self._init_drop()
         self.protocol("WM_DELETE_WINDOW", self.on_closing)
         self.after(100, self._poll)
         self.after(50, lambda: self.ent_url.focus_set())
@@ -264,7 +288,8 @@ class RTubeApp(ctk.CTk):
         self.btn_analyze.grid(row=0, column=3, padx=(8, 0))
 
         self.lbl_url_hint = ctk.CTkLabel(card, text="Після вставки посилання аналіз "
-                                                    "запускається сам. Enter — теж.",
+                                                    "запускається сам. Enter — теж. "
+                                                    "Файл зі списком можна перетягнути у вікно.",
                                          font=FONT_SMALL, text_color=uikit.TEXT_MUTED, anchor="w")
         self.lbl_url_hint.grid(row=1, column=0, sticky="ew", padx=18, pady=(0, 10))
 
@@ -383,11 +408,20 @@ class RTubeApp(ctk.CTk):
         # Сума тривалостей завершених відео — клік копіює «12,34» (хвилин,секунд).
         self.lbl_total = uikit.CopyLabel(title, font=FONT_UI, text_color=uikit.STATE_INFO)
         self.lbl_total.pack(side="left", padx=(16, 0))
-        self.btn_cancel_all = ctk.CTkButton(head, text="Скасувати все", width=130, height=28,
+        # Кнопки з'являються, коли мають сенс; порядок сталий — колонки сітки.
+        buttons = ctk.CTkFrame(head, fg_color="transparent")
+        buttons.grid(row=0, column=1, sticky="e")
+        self.btn_pause = uikit.SecondaryButton(buttons, text="⏸ Пауза", width=100, height=28,
+                                               command=self.toggle_pause)
+        self.btn_cancel_all = ctk.CTkButton(buttons, text="Скасувати все", width=120, height=28,
                                             fg_color=uikit.DANGER, hover_color=uikit.DANGER_HOVER,
                                             command=self.cancel_all)
-        uikit.SecondaryButton(head, text="Прибрати завершені", width=150, height=28,
-                              command=self._clear_finished).grid(row=0, column=2)
+        self.btn_retry_failed = uikit.SecondaryButton(buttons, text="↻ Невдалі", width=120,
+                                                      height=28, command=self.retry_failed)
+        self.btn_report = uikit.SecondaryButton(buttons, text="📊 Звіт", width=86, height=28,
+                                                command=self.save_report)
+        uikit.SecondaryButton(buttons, text="Прибрати завершені", width=150, height=28,
+                              command=self._clear_finished).grid(row=0, column=4)
         self.jobs_list = ctk.CTkScrollableFrame(card, fg_color="transparent")
         self.jobs_list.grid(row=1, column=0, sticky="nsew", padx=8, pady=(0, 10))
         self.jobs_list.grid_columnconfigure(0, weight=1)
@@ -395,6 +429,8 @@ class RTubeApp(ctk.CTk):
                                       "кілька відео підряд — вони качатимуться по черзі.",
                                       font=FONT_SMALL, text_color=uikit.TEXT_MUTED)
         self.lbl_empty.grid(row=0, column=0, pady=18)
+        self.lbl_more = ctk.CTkLabel(self.jobs_list, text="", font=FONT_SMALL,
+                                     text_color=uikit.TEXT_MUTED)
 
     def _build_statusbar(self):
         bar = ctk.CTkFrame(self, fg_color="transparent")
@@ -532,8 +568,10 @@ class RTubeApp(ctk.CTk):
             parent=self, title="Файл зі списком відео",
             filetypes=[("Таблиці й списки", "*.xlsx *.xlsm *.xls *.csv *.txt"),
                        ("Excel", "*.xlsx *.xlsm *.xls"), ("CSV", "*.csv"), ("Усі файли", "*.*")])
-        if not path:
-            return
+        if path:
+            self.load_list_file(path)
+
+    def load_list_file(self, path):
         name = os.path.basename(path)
 
         def work(token):
@@ -550,6 +588,66 @@ class RTubeApp(ctk.CTk):
 
         self.ent_url.delete(0, "end")
         self._start_background(work, f"Читаю {name}…")
+
+    # ── перетягування й буфер обміну ──────────────────────────────────────
+    def _init_drop(self):
+        if TkinterDnD is None:
+            return
+        try:
+            TkinterDnD._require(self)
+            self.drop_target_register(DND_FILES, DND_TEXT)
+            self.dnd_bind("<<Drop>>", self._on_drop)
+        except Exception as exc:
+            applog.warning(f"Перетягування файлів недоступне: {exc}")
+
+    def _on_drop(self, event):
+        """Файл зі списком → пакет; посилання, перетягнуте з браузера, → як вставлене."""
+        data = event.data or ""
+        try:
+            items = list(self.tk.splitlist(data))
+        except Exception:
+            items = [data]
+        files = [p for p in items if os.path.isfile(p)]
+        if files:
+            supported = [p for p in files if os.path.splitext(p)[1].lower() in sheets.SUPPORTED]
+            if not supported:
+                self._hint("Це не список: перетягніть .xlsx, .xls, .csv або .txt",
+                           uikit.STATE_WARN)
+            else:
+                self.load_list_file(supported[0])
+                if len(files) > 1:
+                    applog.info(f"Перетягнуто {len(files)} файлів — беру {supported[0]}")
+            return event.action
+        self._take_text(data.strip())
+        return event.action
+
+    def _take_text(self, text):
+        """Текст із посиланнями — у поле й на аналіз, як після «Вставити»."""
+        if not text or not _has_links(text):
+            return False
+        self.ent_url.delete(0, "end")
+        self.ent_url.insert(0, text)
+        self.analyze()
+        return True
+
+    def _read_clipboard(self):
+        try:
+            return self.clipboard_get()
+        except Exception:
+            return ""       # порожньо, картинка, буфер зайнятий іншою програмою
+
+    def _watch_clipboard(self):
+        """Скопійоване деінде посилання на YouTube саме з'являється в полі."""
+        text = self._read_clipboard()
+        if text == self._clip_last:
+            return
+        self._clip_last = text
+        text = text.strip()
+        # Поки йде аналіз чи відкрита картка пакета — не перебиваємо.
+        if self._analyzing or self.batch_card.winfo_manager():
+            return
+        if text and text != self.ent_url.get().strip() and self._take_text(text):
+            applog.info("Посилання з буфера обміну")
 
     def _show_file_batch(self, name, result):
         entries = [(url, url, pid or "") for pid, url in result.pairs]
@@ -872,17 +970,19 @@ class RTubeApp(ctk.CTk):
     def _enqueue(self, jobs):
         """Ставить у чергу, пропускаючи ролики, що вже чекають чи качаються. Повертає, скільки додано."""
         # Ключ — ролик І товар: той самий ролик для двох товарів — це два файли.
-        busy = {(r.job.url, r.job.product_id) for r in self.rows.values() if r.job.state in ACTIVE}
+        busy = {(j.url, j.product_id) for j in self.jobs.values() if j.state in ACTIVE}
         added = 0
         for job in jobs:
             key = (job.url, job.product_id)
             if key in busy:
                 continue
             busy.add(key)
-            self._add_row(job)
+            self.jobs[job.id] = job
             self._session.add(job.id)
             self.manager.submit(job)
             added += 1
+        if added:
+            self._materialize()
         if not added and jobs:
             self._hint("Це відео вже в черзі", uikit.STATE_WARN)
         self._queue_dirty = True
@@ -904,31 +1004,109 @@ class RTubeApp(ctk.CTk):
         self._queue_dirty = True
 
     def retry(self, job):
-        clone = job.clone()
-        old = self.rows.pop(job.id, None)
-        if old:
-            old.destroy()
-        self._enqueue([clone])
+        self.retry_many([job])
 
-    def _add_row(self, job):
-        self.lbl_empty.grid_remove()
-        row = JobRow(self.jobs_list, self, job)
-        self.rows[job.id] = row
+    def retry_many(self, jobs):
+        clones = []
+        for job in jobs:
+            clones.append(job.clone())
+            self.jobs.pop(job.id, None)
+            old = self.rows.pop(job.id, None)
+            if old:
+                old.destroy()
+        self._enqueue(clones)
+
+    def retry_failed(self):
+        failed = sorted((j for j in self.jobs.values() if j.state in ("error", "cancelled")),
+                        key=lambda j: j.id)
+        if failed:
+            self.retry_many(failed)
+            self._hint(f"Знову в черзі: {len(failed)} відео", uikit.STATE_OK)
+
+    def toggle_pause(self):
+        if self.manager.paused:
+            self.manager.resume()
+            applog.info("Черга: продовжено")
+        else:
+            self.manager.pause()
+            applog.info("Черга: пауза")
+        self._sync_pause_button()
+
+    def _sync_pause_button(self):
+        self.btn_pause.configure(text="▶ Продовжити" if self.manager.paused else "⏸ Пауза")
+
+    def save_report(self):
+        """Звіт xlsx по всьому, що зараз у списку, — у теку з відео."""
+        jobs = sorted(self.jobs.values(), key=lambda j: j.id)
+        if not jobs:
+            self._hint("Список завантажень порожній — звітувати нема про що", uikit.STATE_WARN)
+            return
+        dirs = {j.out_dir for j in jobs}
+        out_dir = dirs.pop() if len(dirs) == 1 else self.dir_var.get()
+        items = [{"product_id": j.product_id, "url": j.url, "title": j.title,
+                  "filepath": j.filepath, "state": j.state, "text": j.status,
+                  "duration": job_duration(j)} for j in jobs]
+        path = os.path.join(out_dir, report.default_name())
+        try:
+            report.write_report(path, items)
+        except PermissionError:
+            self._hint(f"{os.path.basename(path)} відкритий в Excel — закрийте й спробуйте ще раз",
+                       uikit.STATE_ERROR)
+            return
+        except Exception as exc:
+            applog.error(f"Звіт {path} не записався", exc)
+            self._hint(f"Звіт не записався: {exc}"[:220], uikit.STATE_ERROR)
+            return
+        applog.info(f"Звіт: {path} ({len(items)} рядків)")
+        self._hint(f"Звіт збережено: {path}", uikit.STATE_OK)
+        if not uikit.select_in_explorer(path):
+            uikit.open_path(out_dir)
+
+    def _materialize(self, force=()):
+        """Створює рядки для завдань, що от-от почнуться (до QUEUED_ROWS у
+        черзі), і для force — тих, що вже почались. Завдання без рядка, яке
+        скасували в черзі, рядка не отримує: воно лише в лічильнику й у звіті."""
+        queued = sum(1 for r in self.rows.values() if r.job.state == "queued")
+        new = {i for i in force if i in self.jobs and i not in self.rows}
+        for job in sorted(self.jobs.values(), key=lambda j: j.id):
+            if queued >= QUEUED_ROWS:
+                break
+            if job.id not in self.rows and job.id not in new and job.state == "queued":
+                new.add(job.id)
+                queued += 1
+        for job_id in new:
+            self.rows[job_id] = JobRow(self.jobs_list, self, self.jobs[job_id])
         self._regrid_rows()
 
     def _regrid_rows(self):
         # Нові зверху: щойно додане завантаження має бути видно одразу.
         for i, row in enumerate(sorted(self.rows.values(), key=lambda r: -r.job.id)):
             row.grid(row=i + 1, column=0, sticky="ew", padx=4, pady=4)
-        if not self.rows:
+        hidden = [j for j in self.jobs.values() if j.id not in self.rows]
+        waiting = sum(1 for j in hidden if j.state in ACTIVE)
+        parts = []
+        if waiting:
+            parts.append(f"… і ще {waiting} у черзі — рядки з'являться, коли дійде черга")
+        if len(hidden) > waiting:
+            parts.append(f"скасовано без рядка: {len(hidden) - waiting} (є у звіті)")
+        if parts:
+            self.lbl_more.configure(text="  ·  ".join(parts))
+            self.lbl_more.grid(row=0, column=0, pady=(6, 2))
+        else:
+            self.lbl_more.grid_remove()
+        if self.jobs:
+            self.lbl_empty.grid_remove()
+        else:
             self.lbl_empty.grid()
 
     def _clear_finished(self):
-        for job_id, row in list(self.rows.items()):
-            if row.job.state in FINISHED:
-                row.destroy()
-                del self.rows[job_id]
-        self._regrid_rows()
+        for job_id, job in list(self.jobs.items()):
+            if job.state in FINISHED:
+                del self.jobs[job_id]
+                row = self.rows.pop(job_id, None)
+                if row:
+                    row.destroy()
+        self._materialize()
 
     def _choose_dir(self):
         path = filedialog.askdirectory(initialdir=self.dir_var.get(), parent=self,
@@ -956,8 +1134,7 @@ class RTubeApp(ctk.CTk):
             return      # під час закриття черга вже збережена — скасування її не стирає
         if not settings.get("resume_queue"):
             return
-        jobs = sorted((r.job for r in self.rows.values() if r.job.state in ACTIVE),
-                      key=lambda j: j.id)
+        jobs = sorted((j for j in self.jobs.values() if j.state in ACTIVE), key=lambda j: j.id)
         if jobs:
             queuestore.save(jobs)
         else:
@@ -977,11 +1154,13 @@ class RTubeApp(ctk.CTk):
         if time.monotonic() < self._error_until:
             self.taskbar.set_state(taskbar.ERROR)
             return
-        session = [self.rows[i] for i in self._session if i in self.rows]
-        running = [r for r in session if r.job.state == "running"]
-        if running and running[0].bar.cget("mode") == "determinate":
-            done = sum(1 for r in session if r.job.state in FINISHED)
-            total = max(1, len(session))
+        session = [self.jobs[i] for i in self._session if i in self.jobs]
+        done = sum(1 for j in session if j.state in FINISHED)
+        total = max(1, len(session))
+        running = [self.rows[j.id] for j in session if j.state == "running" and j.id in self.rows]
+        if self.manager.paused and active:
+            self.taskbar.set_progress(done / total, taskbar.PAUSED)
+        elif running and running[0].bar.cget("mode") == "determinate":
             self.taskbar.set_progress((done + running[0].fraction) / total)
         elif active or self._analyzing or ffinstall.in_progress():
             self.taskbar.set_state(taskbar.INDETERMINATE)
@@ -990,7 +1169,7 @@ class RTubeApp(ctk.CTk):
 
     def _on_queue_idle(self):
         """Черга щойно спорожніла: сповіщення (якщо вікно не перед очима)."""
-        session = [self.rows[i].job for i in self._session if i in self.rows]
+        session = [self.jobs[i] for i in self._session if i in self.jobs]
         self._session.clear()
         done = sum(1 for j in session if j.state == "done")
         failed = sum(1 for j in session if j.state == "error")
@@ -1023,6 +1202,8 @@ class RTubeApp(ctk.CTk):
                 self._save_queue()
             else:
                 queuestore.clear()
+        elif key == "watch_clipboard":
+            self._clip_last = self._read_clipboard()    # уже скопійоване не підхоплюємо
         elif key == "ytdlp_ready":
             self._show_ytdlp_ready(value)
 
@@ -1043,6 +1224,9 @@ class RTubeApp(ctk.CTk):
 
     def _drain_events(self):
         self._track_ffmpeg_install()
+        self._polls += 1
+        if self._polls % CLIPBOARD_EVERY == 0 and settings.get("watch_clipboard"):
+            self._watch_clipboard()
         try:
             while True:
                 event = self.ui_events.get_nowait()
@@ -1062,9 +1246,21 @@ class RTubeApp(ctk.CTk):
                     self._show_ytdlp_ready(event[1])
         except queue.Empty:
             pass
+        started, finished = [], False
         try:
             for _ in range(200):
                 kind, job_id, payload = self.manager.events.get_nowait()
+                job = self.jobs.get(job_id)
+                if job is None:
+                    continue
+                if kind == "state":
+                    job.status = payload[1]
+                    self._queue_dirty = True
+                    finished = True
+                    if payload[0] == "error":
+                        self._error_until = time.monotonic() + ERROR_FLASH
+                    if payload[0] == "running" and job_id not in self.rows:
+                        started.append(job_id)      # рядок створиться вже з цим станом
                 row = self.rows.get(job_id)
                 if row is None:
                     continue
@@ -1075,19 +1271,26 @@ class RTubeApp(ctk.CTk):
                 elif kind == "state":
                     row.set_state(*payload)
                     row.refresh_duration()
-                    self._queue_dirty = True
-                    if payload[0] == "error":
-                        self._error_until = time.monotonic() + ERROR_FLASH
         except queue.Empty:
             pass
+        if started or finished:
+            # Черга посунулась — підтягуємо наступні рядки (і лічильник «ще N»).
+            self._materialize(force=started)
 
         active = self._active_jobs()
+        paused = self.manager.paused
+        failed = sum(1 for j in self.jobs.values() if j.state in ("error", "cancelled"))
+        _show(self.btn_pause, bool(active) or paused, column=0)
+        _show(self.btn_cancel_all, bool(active), column=1)
+        _show(self.btn_retry_failed, bool(failed), column=2)
+        _show(self.btn_report, any(j.state in FINISHED for j in self.jobs.values()), column=3)
+        if failed:
+            self.btn_retry_failed.configure(text=f"↻ Невдалі ({failed})")
         if active:
-            self.btn_cancel_all.grid(row=0, column=1, padx=(0, 8))
-            self.lbl_jobs.configure(text=f"Завантаження · у роботі {len(active)}")
+            state = "пауза" if paused else "у роботі"
+            self.lbl_jobs.configure(text=f"Завантаження · {state} {len(active)}")
         else:
-            self.btn_cancel_all.grid_remove()
-            self.lbl_jobs.configure(text="Завантаження")
+            self.lbl_jobs.configure(text="Завантаження · пауза" if paused else "Завантаження")
         self._update_total()
         if self._was_active and not active:
             self._on_queue_idle()
@@ -1099,7 +1302,7 @@ class RTubeApp(ctk.CTk):
     def _update_total(self):
         """«Завершено: 4 · ⏱ 12,34» — лише ті, що зараз у списку: «Прибрати
         завершені» обнуляє лічильник разом зі списком."""
-        done = [r.job for r in self.rows.values() if r.job.state == "done"]
+        done = [j for j in self.jobs.values() if j.state == "done"]
         if not done:
             self.lbl_total.set_value("", "")
             return
@@ -1119,7 +1322,7 @@ class RTubeApp(ctk.CTk):
             pass
 
     def _active_jobs(self):
-        return [r.job for r in self.rows.values() if r.job.state in ACTIVE]
+        return [j for j in self.jobs.values() if j.state in ACTIVE]
 
     def _restart(self):
         if self._active_jobs() and not settings.get("resume_queue"):
@@ -1186,6 +1389,21 @@ class RTubeApp(ctk.CTk):
         w = round(self.winfo_width() / scale)
         h = round(self.winfo_height() / scale)
         return f"{max(w, MIN_SIZE[0])}x{max(h, MIN_SIZE[1])}"
+
+
+def _has_links(text):
+    """Чи є в тексті посилання на YouTube. Саме «youtu»: голий ID ролика
+    (11 символів) підходить під будь-яке скопійоване слово такої довжини."""
+    return "youtu" in text.lower() and \
+        bool(tools.collection_url(text) or tools.extract_video_urls(text))
+
+
+def _show(widget, visible, **grid):
+    """grid / grid_remove лише при зміні: викликається з опитування 10 разів на секунду."""
+    if visible and not widget.winfo_manager():
+        widget.grid(row=0, padx=(0, 8), **grid)
+    elif not visible and widget.winfo_manager():
+        widget.grid_remove()
 
 
 def _load_thumbnail(info):

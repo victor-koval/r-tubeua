@@ -2,6 +2,8 @@
 
 import json
 import os
+import queue
+import time
 import unittest
 from unittest import mock
 
@@ -236,6 +238,147 @@ class DiskTest(unittest.TestCase):
         self.assertEqual(downloader.needed_bytes([1000, 0]), 2100)
         self.assertEqual(downloader.needed_bytes([]), 0)
 
+
+class QueueTest(unittest.TestCase):
+    """Черга: авто-повтор при обмеженні YouTube і пауза — з підміненим _Runner."""
+
+    def setUp(self):
+        self.patches = [mock.patch.object(downloader, "applog", mock.MagicMock()),
+                        mock.patch.object(downloader, "RATE_LIMIT_WAITS", (0.05, 0.05, 0.05))]
+        for p in self.patches:
+            p.start()
+        self.manager = downloader.DownloadManager()
+
+    def tearDown(self):
+        for p in self.patches:
+            p.stop()
+
+    def use_runner(self, run):
+        class FakeRunner:
+            def __init__(self, job, *args, **kwargs):
+                self.job = job
+
+            def run(self):
+                return run(self.job)
+
+        patch = mock.patch.object(downloader, "_Runner", FakeRunner)
+        patch.start()
+        self.addCleanup(patch.stop)
+
+    def events_until(self, job, states, timeout=5):
+        """Події завдання, доки воно не перейде в один зі станів states."""
+        seen = []
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            try:
+                kind, job_id, payload = self.manager.events.get(timeout=0.1)
+            except queue.Empty:
+                continue
+            if job_id != job.id:
+                continue
+            seen.append((kind, payload))
+            if kind == "state" and payload[0] in states:
+                return seen
+        self.fail(f"не дочекались {states}: {seen}")
+
+    def test_rate_limit_detected(self):
+        self.assertTrue(downloader.is_rate_limited(
+            downloader.DownloadError("HTTP Error 429: Too Many Requests")))
+        self.assertTrue(downloader.is_rate_limited(
+            Exception("Sign in to confirm you're not a bot")))
+        self.assertFalse(downloader.is_rate_limited(Exception("Private video")))
+
+    def test_retries_after_rate_limit(self):
+        calls = []
+
+        def run(job):
+            calls.append(1)
+            if len(calls) < 3:
+                raise downloader.DownloadError("HTTP Error 429: Too Many Requests")
+            return "Готово"
+
+        self.use_runner(run)
+        job = downloader.Job(url="u", title="t", out_dir=".")
+        self.manager.submit(job)
+        seen = self.events_until(job, ("done", "error"))
+        self.assertEqual(seen[-1][1][0], "done")
+        self.assertEqual(len(calls), 3)
+        self.assertTrue(any(k == "progress" and "обмежив" in p[1] for k, p in seen))
+
+    def test_gives_up_after_all_waits(self):
+        self.use_runner(lambda job: (_ for _ in ()).throw(
+            downloader.DownloadError("HTTP Error 429")))
+        job = downloader.Job(url="u", title="t", out_dir=".")
+        self.manager.submit(job)
+        self.assertEqual(self.events_until(job, ("done", "error"))[-1][1][0], "error")
+
+    def test_cancel_during_rate_limit_wait(self):
+        downloader.RATE_LIMIT_WAITS = (30,)
+        self.use_runner(lambda job: (_ for _ in ()).throw(
+            downloader.DownloadError("HTTP Error 429")))
+        job = downloader.Job(url="u", title="t", out_dir=".")
+        self.manager.submit(job)
+        self.events_until(job, ("running",))
+        # Перший відлік — ролик чекає; скасування має спрацювати одразу.
+        while True:
+            kind, job_id, payload = self.manager.events.get(timeout=5)
+            if kind == "progress" and job_id == job.id:
+                break
+        started = time.monotonic()
+        self.manager.cancel(job)
+        self.assertEqual(self.events_until(job, ("cancelled", "error"))[-1][1][0], "cancelled")
+        self.assertLess(time.monotonic() - started, 3)
+
+    def test_pause_requeues_current_first(self):
+        order = []
+
+        def run(job):
+            order.append(job.title)
+            if job.title == "a" and order.count("a") == 1:
+                job.cancel_event.wait(5)        # «качається», доки не натиснуть паузу
+                raise downloader.Cancelled()
+            return "Готово"
+
+        self.use_runner(run)
+        a = downloader.Job(url="a", title="a", out_dir=".")
+        b = downloader.Job(url="b", title="b", out_dir=".")
+        self.manager.submit(a)
+        self.manager.submit(b)
+        self.events_until(a, ("running",))
+        self.manager.pause()
+        seen = self.events_until(a, ("queued",))
+        self.assertIn("Пауза", seen[-1][1][1])
+        self.assertTrue(a.keep_partial is False and not a.cancel_event.is_set())
+        time.sleep(0.3)
+        self.assertEqual(order, ["a"])          # на паузі нічого нового не починається
+        self.manager.resume()
+        self.events_until(b, ("done",))
+        self.assertEqual(order, ["a", "a", "b"])
+        self.assertEqual(a.state, "done")
+
+    def test_user_cancel_is_not_pause(self):
+        def run(job):
+            job.cancel_event.wait(5)
+            raise downloader.Cancelled()
+
+        self.use_runner(run)
+        job = downloader.Job(url="u", title="t", out_dir=".")
+        self.manager.submit(job)
+        self.events_until(job, ("running",))
+        self.manager.cancel(job)
+        self.assertEqual(self.events_until(job, ("cancelled", "queued"))[-1][1][0], "cancelled")
+
+    def test_batch_gap(self):
+        with mock.patch.object(downloader, "BATCH_GAP", 0.3):
+            job = downloader.Job(url="u", title="t", out_dir=".", prefs={"max_height": 720})
+            self.manager._last_network = time.monotonic()
+            started = time.monotonic()
+            self.manager._throttle(job)
+            self.assertGreaterEqual(time.monotonic() - started, 0.25)
+            single = downloader.Job(url="u", title="t", out_dir=".")
+            started = time.monotonic()
+            self.manager._throttle(single)
+            self.assertLess(time.monotonic() - started, 0.1)
 
 if __name__ == "__main__":
     unittest.main()

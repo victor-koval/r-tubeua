@@ -189,6 +189,9 @@ class SettingsDialog(ctk.CTkToplevel):
         self._segment(body, 4, "Формат звуку", "audio_container", ("m4a", "mp3"))
         self._menu(body, 5, "Субтитри", "subs_mode", SUBS_OPTIONS)
         self._check(body, 6, "Додавати оригінальну доріжку другою", "keep_original")
+        self._check(body, 7, "Підхоплювати посилання з буфера обміну", "watch_clipboard",
+                    "Скопіювали посилання на YouTube у браузері — воно саме з'являється в полі "
+                    "й аналізується. Те, що було в буфері раніше, не чіпається.")
 
     def _build_background(self, body):
         row = self._check(body, 0, "Сповіщення Windows, коли все завантажено", "notify_done",

@@ -57,6 +57,7 @@ DEFAULTS = {
     "taskbar_progress": True,  # прогрес на іконці в панелі задач
     "resume_queue": True,      # продовжувати незавершене після перезапуску
     "ytdlp_autoupdate": True,  # самостійно оновлювати yt-dlp (див. ytupdate.py)
+    "watch_clipboard": False,  # скопійоване посилання на YouTube саме йде на аналіз
     "geometry": "",
     "ytdlp_checked_at": 0,     # коли востаннє питали PyPI про свіжий yt-dlp
     "ytdlp_bad": [],           # версії yt-dlp, що не пройшли самоперевірку або не запустились
@@ -66,7 +67,7 @@ DEFAULTS = {
 # Службове (розмір вікна, стан оновлювача) сюди не входить.
 USER_KEYS = ("download_dir", "max_height", "container", "audio_container", "preferred_audio",
              "keep_original", "subs_mode", "theme", "notify_done", "taskbar_progress",
-             "resume_queue", "ytdlp_autoupdate")
+             "resume_queue", "ytdlp_autoupdate", "watch_clipboard")
 
 _lock = threading.Lock()
 _cache = None

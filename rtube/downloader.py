@@ -5,6 +5,7 @@
 не терпить викликів з інших потоків і рано чи пізно падає без пояснень.
 """
 
+import collections
 import copy
 import glob
 import itertools
@@ -313,8 +314,10 @@ class Job:
     prefs: dict = field(default_factory=dict)
     id: int = field(default_factory=lambda: next(_job_ids))
     state: str = "queued"           # queued / running / done / error / cancelled
+    status: str = "У черзі"         # останній текст стану — для звіту й пізно створеного рядка
     filepath: str = ""
     keep_partial: bool = False      # при скасуванні лишити .part, щоб докачати потім
+    pause_requested: bool = False   # «скасування» від паузи: повернути в чергу, а не скасовувати
     cancel_event: threading.Event = field(default_factory=threading.Event)
 
     @property
@@ -382,6 +385,21 @@ def apply_prefs(job, info):
         job.keep_original = orig is not None and orig != job.audio_lang and not job.audio_only
 
 
+# YouTube обмежив запити (429, «підтвердіть, що ви не бот») — на великих
+# пакетах таке буває. Замість одразу «Помилка» чекаємо й пробуємо знову.
+RATE_LIMIT_WAITS = (60, 180, 600)
+# Між роликами пакета — коротка пауза перед наступним аналізом: запити
+# підряд без перерви YouTube і обмежує.
+BATCH_GAP = 3
+
+
+def is_rate_limited(exc):
+    """Чи це обмеження запитів від YouTube, яке минає саме за кілька хвилин."""
+    low = str(exc).lower()
+    return "429" in low or "too many requests" in low or \
+        ("sign in to confirm you" in low and "bot" in low)
+
+
 class DownloadManager:
     """Одне завантаження за раз, решта чекає в черзі.
 
@@ -391,9 +409,12 @@ class DownloadManager:
 
     def __init__(self):
         self.events = queue.Queue()
-        self._jobs = queue.Queue()
+        self._pending = collections.deque()
+        self._cond = threading.Condition()
+        self._paused = False
         self._running = None
         self._worker_ident = None
+        self._last_network = 0.0    # коли закінчилось попереднє завантаження (monotonic)
         # Що вже скачано в цьому сеансі: same_video_key → шлях. У шаблоні
         # Rozetka одне відео буває в 9 товарів — качаємо раз, решті копіюємо.
         self._done_files = {}
@@ -402,17 +423,39 @@ class DownloadManager:
         self._thread.start()
 
     def submit(self, job):
-        self._jobs.put(job)
+        with self._cond:
+            self._pending.append(job)
+            self._cond.notify_all()
         self._emit("state", job, "queued", "У черзі")
 
     def is_busy(self):
         """Чи качається щось просто зараз (для коректного закриття вікна)."""
         return self._running is not None
 
-    def cancel(self, job, keep_partial=False):
+    @property
+    def paused(self):
+        return self._paused
+
+    def pause(self):
+        """Наступні не починаються; поточне зупиняється, лишаючи .part, і
+        повертається на початок черги — після «Продовжити» докачається."""
+        with self._cond:
+            self._paused = True
+        job = self._running
+        if job is not None:
+            self.cancel(job, keep_partial=True, pause=True)
+
+    def resume(self):
+        with self._cond:
+            self._paused = False
+            self._cond.notify_all()
+
+    def cancel(self, job, keep_partial=False, pause=False):
         """Скасовує завдання. keep_partial — лишити недокачане, щоб продовжити
-        після перезапуску (див. queuestore)."""
+        після перезапуску (див. queuestore). pause — це не скасування, а пауза:
+        завдання повернеться в чергу."""
         job.keep_partial = keep_partial
+        job.pause_requested = pause
         job.cancel_event.set()
         if job.state == "queued":
             job.state = "cancelled"
@@ -427,38 +470,95 @@ class DownloadManager:
     def _emit(self, kind, job, *payload):
         self.events.put((kind, job.id, payload))
 
+    def _next(self):
+        """Наступне завдання; на паузі й з порожньою чергою — чекає."""
+        with self._cond:
+            while self._paused or not self._pending:
+                self._cond.wait()
+            return self._pending.popleft()
+
     def _worker(self):
         self._worker_ident = threading.get_ident()
         while True:
-            job = self._jobs.get()
+            job = self._next()
             if job.cancel_event.is_set():
                 continue
             job.state = "running"
             self._running = job
             self._emit("state", job, "running", "Підготовка…")
             try:
-                note = _Runner(job, self._emit, self._done_files, self._info_cache).run()
-                job.state = "done"
-                if job.filepath and os.path.isfile(job.filepath):
-                    self._done_files[same_video_key(job)] = job.filepath
-                self._emit("state", job, "done", note or "Готово")
+                self._process(job)
+            finally:
+                self._running = None
+                self._last_network = time.monotonic()
+
+    def _process(self, job):
+        for attempt in itertools.count():
+            try:
+                note = _Runner(job, self._emit, self._done_files, self._info_cache,
+                               throttle=self._throttle).run()
             except Cancelled:
-                job.state = "cancelled"
-                self._emit("state", job, "cancelled", "Скасовано")
+                self._stopped(job)
+                return
             except Exception as exc:
+                if is_rate_limited(exc) and attempt < len(RATE_LIMIT_WAITS):
+                    wait = RATE_LIMIT_WAITS[attempt]
+                    applog.warning(f"«{job.title}»: YouTube обмежив запити, повтор через "
+                                   f"{wait} с (спроба {attempt + 2}): {exc}")
+                    if self._sleep(job, wait, "YouTube обмежив запити — повтор через {}"):
+                        continue
+                    self._stopped(job)
+                    return
                 job.state = "error"
                 applog.error(f"Завантаження «{job.title}» ({job.url}) не вдалося", exc)
                 self._emit("state", job, "error", humanize_error(exc))
-            finally:
-                self._running = None
+                return
+            job.state = "done"
+            if job.filepath and os.path.isfile(job.filepath):
+                self._done_files[same_video_key(job)] = job.filepath
+            self._emit("state", job, "done", note or "Готово")
+            return
+
+    def _stopped(self, job):
+        """Завдання перервали: або пауза (назад на початок черги), або скасування."""
+        if job.pause_requested:
+            job.pause_requested = False
+            job.keep_partial = False
+            job.cancel_event = threading.Event()
+            job.state = "queued"
+            with self._cond:
+                self._pending.appendleft(job)
+            self._emit("state", job, "queued", "Пауза — докачається з того ж місця")
+            return
+        job.state = "cancelled"
+        self._emit("state", job, "cancelled", "Скасовано")
+
+    def _sleep(self, job, seconds, text=None):
+        """Чекає, показуючи відлік у рядку. False — завдання скасували чи поставили на паузу."""
+        deadline = time.monotonic() + seconds
+        while (left := deadline - time.monotonic()) > 0:
+            if text:
+                self._emit("progress", job, None, text.format(_eta(left)))
+            if job.cancel_event.wait(min(1.0, left)):
+                return False
+        return not job.cancel_event.is_set()
+
+    def _throttle(self, job):
+        """Перед аналізом ролика з пакета: не частіше, ніж раз на BATCH_GAP секунд."""
+        if not job.prefs:
+            return
+        left = self._last_network + BATCH_GAP - time.monotonic()
+        if left > 0 and not self._sleep(job, left):
+            raise Cancelled()
 
 
 class _Runner:
     """Одне завантаження: параметри, прогрес, повтор у разі збою."""
 
-    def __init__(self, job, emit, done_files=None, info_cache=None):
+    def __init__(self, job, emit, done_files=None, info_cache=None, throttle=None):
         self.job = job
         self.emit = emit
+        self.throttle = throttle    # пауза перед запитом до YouTube (див. DownloadManager._throttle)
         self.done_files = done_files if done_files is not None else {}
         self.info_cache = info_cache if info_cache is not None else {}
         self.part_sizes = {}      # format_id → розмір у байтах
@@ -650,6 +750,8 @@ class _Runner:
             if cached and time.monotonic() - cached[0] < INFO_TTL:
                 job.info = cached[1]        # той самий ролик для іншого товару
             else:
+                if self.throttle:
+                    self.throttle(job)
                 self.emit("progress", job, None, "Аналіз…")
                 job.info = analyze(job.url)
                 self.info_cache[job.url] = (time.monotonic(), job.info)
@@ -815,11 +917,11 @@ class _Runner:
                            *glob.glob(glob.escape(stem) + "*.ytdl"),
                            *glob.glob(glob.escape(title) + ".temp.*")}
         for candidate in candidates:
-                try:
-                    if os.path.isfile(candidate):
-                        os.remove(candidate)
-                except OSError:
-                    pass
+            try:
+                if os.path.isfile(candidate):
+                    os.remove(candidate)
+            except OSError:
+                pass
 
 
 def _eta(seconds):
