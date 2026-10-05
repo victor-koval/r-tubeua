@@ -58,6 +58,9 @@ DEFAULTS = {
     "resume_queue": True,      # продовжувати незавершене після перезапуску
     "ytdlp_autoupdate": True,  # самостійно оновлювати yt-dlp (див. ytupdate.py)
     "watch_clipboard": False,  # скопійоване посилання на YouTube саме йде на аналіз
+    "app_autoupdate": True,    # завантажувати нові версії програми з GitHub (див. appupdate.py)
+    "app_checked_at": 0,       # коли востаннє питали GitHub про новий реліз
+    "app_bad": [],             # версії програми, що не пройшли самоперевірку
     "geometry": "",
     "ytdlp_checked_at": 0,     # коли востаннє питали PyPI про свіжий yt-dlp
     "ytdlp_bad": [],           # версії yt-dlp, що не пройшли самоперевірку або не запустились
@@ -67,7 +70,7 @@ DEFAULTS = {
 # Службове (розмір вікна, стан оновлювача) сюди не входить.
 USER_KEYS = ("download_dir", "max_height", "container", "audio_container", "preferred_audio",
              "keep_original", "subs_mode", "theme", "notify_done", "taskbar_progress",
-             "resume_queue", "ytdlp_autoupdate", "watch_clipboard")
+             "resume_queue", "ytdlp_autoupdate", "watch_clipboard", "app_autoupdate")
 
 _lock = threading.Lock()
 _cache = None
@@ -113,10 +116,14 @@ def reset_user():
 
 
 def save():
+    """Атомарно: спершу тимчасовий файл, потім заміна — збій посеред запису
+    (вимкнули світло, закрили процес) не обнулить налаштування."""
     with _lock:
         try:
             os.makedirs(CONFIG_DIR, exist_ok=True)
-            with open(SETTINGS_PATH, "w", encoding="utf-8") as f:
+            tmp = SETTINGS_PATH + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
                 json.dump(_load(), f, ensure_ascii=False, indent=4)
+            os.replace(tmp, SETTINGS_PATH)
         except Exception:
             pass

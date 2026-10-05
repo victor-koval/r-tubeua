@@ -74,13 +74,24 @@ def kill_children(thread_ident):
 _track_child_processes()
 
 
+# Завдання, яке зараз виконує цей потік (див. _Runner.run).
+_current = threading.local()
+
+
+def _cancelling():
+    """Чи скасовано завдання цього потоку: тоді «ERROR» від yt-dlp — лише
+    наслідок вбитого ffmpeg, а не справжня помилка."""
+    job = getattr(_current, "job", None)
+    return job is not None and job.cancel_event.is_set()
+
+
 def base_opts():
     return {
         "quiet": True,
         "no_warnings": False,
         "noprogress": True,
         "noplaylist": True,          # &list= у посиланні не тягне весь плейлист
-        "logger": applog.YtdlpLogger(),
+        "logger": applog.YtdlpLogger(quiet_errors=_cancelling),
         "js_runtimes": tools.find_js_runtimes(),
         "windowsfilenames": True,
         "retries": 10,
@@ -407,7 +418,9 @@ class DownloadManager:
     ризик отримати 429 (забагато запитів) росте.
     """
 
-    def __init__(self):
+    def __init__(self, done_files=None, on_done=None):
+        """done_files — що вже скачано (з минулих запусків, queuestore.load_done);
+        on_done(dict) — зберегти його, коли додався новий файл."""
         self.events = queue.Queue()
         self._pending = collections.deque()
         self._cond = threading.Condition()
@@ -417,7 +430,8 @@ class DownloadManager:
         self._last_network = 0.0    # коли закінчилось попереднє завантаження (monotonic)
         # Що вже скачано в цьому сеансі: same_video_key → шлях. У шаблоні
         # Rozetka одне відео буває в 9 товарів — качаємо раз, решті копіюємо.
-        self._done_files = {}
+        self._done_files = dict(done_files or {})
+        self._on_done = on_done
         self._info_cache = {}       # посилання → (час, info); див. INFO_TTL
         self._thread = threading.Thread(target=self._worker, daemon=True)
         self._thread.start()
@@ -516,6 +530,8 @@ class DownloadManager:
             job.state = "done"
             if job.filepath and os.path.isfile(job.filepath):
                 self._done_files[same_video_key(job)] = job.filepath
+                if self._on_done:
+                    self._on_done(dict(self._done_files))
             self._emit("state", job, "done", note or "Готово")
             return
 
@@ -726,6 +742,7 @@ class _Runner:
 
     # ── запуск ──
     def run(self):
+        _current.job = self.job
         try:
             return self._run()
         except AlreadyHave as have:
@@ -741,6 +758,8 @@ class _Runner:
                     raise
                 raise Cancelled() from exc
             raise
+        finally:
+            _current.job = None
 
     def _prepare(self):
         """Аналіз і вибір для завдань із пакета чи відновленої черги."""

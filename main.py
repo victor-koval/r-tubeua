@@ -12,6 +12,14 @@ def _selftest():
     sys.exit(ytupdate.selftest_main(path, version))
 
 
+def _app_selftest():
+    """«R-TubeUA.exe --app-selftest <версія>» — чи запускається завантажене
+    оновлення програми (див. rtube/appupdate.py). Жодного вікна."""
+    from rtube import appupdate
+    version = sys.argv[sys.argv.index("--app-selftest") + 1]
+    sys.exit(appupdate.selftest_main(version))
+
+
 def _install_excepthooks():
     """У .exe без консолі необроблений виняток інакше зник би безслідно."""
     from rtube import applog
@@ -27,6 +35,8 @@ def _install_excepthooks():
 def main():
     if "--selftest" in sys.argv:
         _selftest()
+    if "--app-selftest" in sys.argv:
+        _app_selftest()
 
     # Довіру до системних сертифікатів вмикаємо ДО будь-яких мережевих запитів:
     # за корпоративним проксі з підміною TLS інакше все падає з

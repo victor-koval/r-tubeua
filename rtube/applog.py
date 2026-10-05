@@ -50,7 +50,15 @@ def error(message, exc=None):
 
 class YtdlpLogger:
     """Перехоплює повідомлення yt-dlp: у консоль .exe без вікна їх однаково
-    ніхто не побачить, а в лозі вони рятують при розборі помилок."""
+    ніхто не побачить, а в лозі вони рятують при розборі помилок.
+
+    quiet_errors() → True: завдання скасували, і «ERROR» від yt-dlp — лише
+    відгук вбитого ffmpeg («Postprocessing: Press [q] to stop»). Такі пишемо
+    як INFO, щоб у лозі ERROR лишались справжніми помилками.
+    """
+
+    def __init__(self, quiet_errors=None):
+        self.quiet_errors = quiet_errors
 
     def debug(self, msg):
         # yt-dlp шле сюди й звичайний вивід (рядки без [debug]) — прогрес
@@ -68,7 +76,10 @@ class YtdlpLogger:
         warning(msg)
 
     def error(self, msg):
-        error(msg)
+        if self.quiet_errors and self.quiet_errors():
+            info(f"(після скасування) {msg}")
+        else:
+            error(msg)
 
 
 def open_log_folder():

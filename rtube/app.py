@@ -19,8 +19,8 @@ except Exception:
     TkinterDnD = None
     _DND_BASES = ()
 
-from . import (applog, downloader, ffinstall, formats, notify, queuestore, report, settings,
-               sheets, taskbar, tools, uikit, ytupdate)
+from . import (applog, appupdate, downloader, ffinstall, formats, notify, queuestore, report,
+               settings, sheets, taskbar, tools, uikit, watchdog, ytupdate)
 from .uikit import FONT_SMALL, FONT_UI, FONT_UI_BOLD, GREEN, GREEN_HOVER
 
 APP_TITLE = "R-TubeUA"
@@ -197,7 +197,8 @@ class RTubeApp(ctk.CTk, *_DND_BASES):
         self.configure(fg_color=uikit.SURFACE_SUNKEN)
         uikit.apply_window_icon(self)
 
-        self.manager = downloader.DownloadManager()
+        self.manager = downloader.DownloadManager(done_files=queuestore.load_done(),
+                                                  on_done=queuestore.save_done)
         self.ui_events = queue.Queue()     # результати аналізу з фонових потоків
         self.jobs = {}                      # job.id → Job: усе, що в списку
         self.rows = {}                      # job.id → JobRow — не для всіх, див. _materialize
@@ -234,6 +235,10 @@ class RTubeApp(ctk.CTk, *_DND_BASES):
         self.after(600, self._init_taskbar)
         self.after(300, self._restore_queue)
         threading.Thread(target=self._check_environment, daemon=True).start()
+        self.watchdog = watchdog.Watchdog(threading.get_ident())
+        self.watchdog.start()
+        self._relaunch = False          # після закриття запустити нову копію (оновлення)
+        self._ytdlp_ready = None
         applog.info(f"Запуск {APP_TITLE} v{APP_VERSION}")
 
     def _window_scale(self):
@@ -453,15 +458,22 @@ class RTubeApp(ctk.CTk, *_DND_BASES):
     # ── оточення ──────────────────────────────────────────────────────────
     def _check_environment(self):
         self._send_environment()
+        appupdate.cleanup(APP_VERSION)
         # Свіжий yt-dlp — після перевірки оточення, щоб не гальмувати старт.
-        if not settings.get("ytdlp_autoupdate"):
-            return
-        try:
-            installed = ytupdate.check_and_install()
-            if installed:
-                self.ui_events.put(("ytdlp_ready", installed))
-        except Exception as exc:
-            applog.error("Оновлення yt-dlp не вдалося — працюю на поточному", exc)
+        if settings.get("ytdlp_autoupdate"):
+            try:
+                installed = ytupdate.check_and_install()
+                if installed:
+                    self.ui_events.put(("ytdlp_ready", installed))
+            except Exception as exc:
+                applog.error("Оновлення yt-dlp не вдалося — працюю на поточному", exc)
+        if settings.get("app_autoupdate"):
+            try:
+                version = appupdate.check_and_download(APP_VERSION)
+                if version:
+                    self.ui_events.put(("app_ready", version))
+            except Exception as exc:
+                applog.error("Перевірка оновлення R-TubeUA не вдалася", exc)
 
     def _send_environment(self):
         try:
@@ -1204,17 +1216,31 @@ class RTubeApp(ctk.CTk, *_DND_BASES):
             self._clip_last = self._read_clipboard()    # уже скопійоване не підхоплюємо
         elif key == "ytdlp_ready":
             self._show_ytdlp_ready(value)
+        elif key == "app_ready":
+            self._show_update_ready()
 
     def _show_ytdlp_ready(self, version):
-        self.lbl_update.configure(text=f"yt-dlp {version} завантажено — "
-                                       "застосується після перезапуску",
-                                  text_color=uikit.STATE_OK)
+        self._ytdlp_ready = version
+        self._show_update_ready()
+
+    def _show_update_ready(self):
+        """Унизу — що чекає на перезапуск: нова версія програми та/або yt-dlp."""
+        app_version = appupdate.state["version"]
+        if app_version:
+            text = f"Є R-TubeUA {app_version} — завантажено й перевірено"
+            button = "Оновити й перезапустити"
+        else:
+            text = f"yt-dlp {self._ytdlp_ready} завантажено — застосується після перезапуску"
+            button = "Перезапустити"
+        self.lbl_update.configure(text=text, text_color=uikit.STATE_OK)
+        self.btn_restart.configure(text=button, width=180 if app_version else 110)
         self.btn_restart.grid(row=0, column=2, padx=(8, 0))
 
     # ── події з фонових потоків ───────────────────────────────────────────
     def _poll(self):
         # Перепланування — у finally: якщо котрась подія впаде, решта вікна
         # однаково має жити, а не застигнути без оновлень прогресу.
+        self.watchdog.beat()
         try:
             self._drain_events()
         finally:
@@ -1242,6 +1268,8 @@ class RTubeApp(ctk.CTk, *_DND_BASES):
                     self._show_environment(*event[1:])
                 elif kind == "ytdlp_ready":
                     self._show_ytdlp_ready(event[1])
+                elif kind == "app_ready":
+                    self._show_update_ready()
         except queue.Empty:
             pass
         started, finished = [], False
@@ -1327,13 +1355,22 @@ class RTubeApp(ctk.CTk, *_DND_BASES):
             self.lbl_update.configure(text="Дочекайтесь завершення завантажень, тоді перезапустіть",
                                       text_color=uikit.STATE_WARN)
             return
-        try:
-            ytupdate.relaunch()
-        except Exception as exc:
-            applog.error("Перезапуск не вдався", exc)
-            self.lbl_update.configure(text="Не вдалося перезапустити — закрийте й відкрийте вручну",
-                                      text_color=uikit.STATE_ERROR)
-            return
+        new_exe = appupdate.state["path"]
+        if new_exe:
+            try:
+                appupdate.apply(new_exe)
+            except Exception as exc:
+                applog.error(f"Не вдалося замінити програму на {new_exe}", exc)
+                messagebox.showerror(
+                    APP_TITLE, "Не вдалося замінити програму новою версією "
+                               f"({exc}).\n\nНовий файл лежить тут — його можна поставити "
+                               f"замість старого вручну:\n{new_exe}", parent=self)
+                uikit.select_in_explorer(new_exe)
+                return
+            appupdate.state.update(version=None, path=None)
+        # Нова копія стартує вже ПІСЛЯ зупинки завантажень (_close_now): інакше
+        # вона взялася б докачувати ролик, який ця ще не відпустила.
+        self._relaunch = True
         self.on_closing(force=True)
 
     def on_closing(self, force=False):
@@ -1376,6 +1413,14 @@ class RTubeApp(ctk.CTk, *_DND_BASES):
             self.taskbar.clear()
         if self.state() == "normal":
             settings.set_many(geometry=self._logical_size())
+        self.watchdog.stop()
+        if self._relaunch:
+            try:
+                ytupdate.relaunch()
+            except Exception as exc:
+                applog.error("Перезапуск не вдався", exc)
+                messagebox.showerror(APP_TITLE, "Не вдалося запустити програму знову — "
+                                                "відкрийте її вручну.", parent=self)
         self.destroy()
 
     def _logical_size(self):

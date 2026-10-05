@@ -57,5 +57,41 @@ class QueueStoreTest(unittest.TestCase):
         self.assertFalse(os.path.exists(self.path))
 
 
+class DoneStoreTest(unittest.TestCase):
+    """Що вже скачано — між запусками, але лише для незмінених файлів."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.path = os.path.join(self.tmp.name, "done.json")
+        self.video = os.path.join(self.tmp.name, "590312170.mp4")
+        with open(self.video, "wb") as f:
+            f.write(b"video")
+        job = downloader.Job(url="https://www.youtube.com/watch?v=pn6mZ0Bcugo", title="t",
+                             out_dir=self.tmp.name, video_key=(1080, 30, "avc1"),
+                             audio_lang="uk", sub_key=("uk", False))
+        self.key = downloader.same_video_key(job)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_roundtrip(self):
+        queuestore.save_done({self.key: self.video}, self.path)
+        self.assertEqual(queuestore.load_done(self.path), {self.key: self.video})
+
+    def test_changed_or_missing_file_dropped(self):
+        queuestore.save_done({self.key: self.video}, self.path)
+        with open(self.video, "ab") as f:
+            f.write(b" replaced")
+        self.assertEqual(queuestore.load_done(self.path), {})
+        os.remove(self.video)
+        self.assertEqual(queuestore.load_done(self.path), {})
+
+    def test_missing_or_broken_store(self):
+        self.assertEqual(queuestore.load_done(self.path), {})
+        with open(self.path, "w") as f:
+            f.write("{oops")
+        with mock.patch.object(queuestore, "applog", mock.MagicMock()):
+            self.assertEqual(queuestore.load_done(self.path), {})
+
 if __name__ == "__main__":
     unittest.main()

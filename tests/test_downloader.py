@@ -380,5 +380,43 @@ class QueueTest(unittest.TestCase):
             self.manager._throttle(single)
             self.assertLess(time.monotonic() - started, 0.1)
 
+class QuietCancelLogTest(unittest.TestCase):
+    def test_errors_after_cancel_are_info(self):
+        from rtube import applog
+        job = downloader.Job(url="u", title="t", out_dir=".")
+        downloader._current.job = job
+        try:
+            logger = applog.YtdlpLogger(quiet_errors=downloader._cancelling)
+            with mock.patch.object(applog, "error") as error,                     mock.patch.object(applog, "info") as info:
+                logger.error("ERROR: Postprocessing: Press [q] to stop")
+                error.assert_called_once()
+                job.cancel_event.set()
+                logger.error("ERROR: Postprocessing: Press [q] to stop")
+                error.assert_called_once()
+                info.assert_called_once()
+        finally:
+            downloader._current.job = None
+
+    def test_done_files_saved(self):
+        saved = []
+        with mock.patch.object(downloader, "applog", mock.MagicMock()):
+            manager = downloader.DownloadManager(done_files={("k",): "old.mp4"},
+                                                 on_done=saved.append)
+            job = downloader.Job(url="u", title="t", out_dir=".")
+
+            class FakeRunner:
+                def __init__(self, job, *args, **kwargs):
+                    self.job = job
+
+                def run(self):
+                    self.job.filepath = __file__
+                    return "Готово"
+
+            with mock.patch.object(downloader, "_Runner", FakeRunner):
+                manager._process(job)
+        self.assertEqual(len(saved), 1)
+        self.assertEqual(saved[0][("k",)], "old.mp4")
+        self.assertIn(__file__, saved[0].values())
+
 if __name__ == "__main__":
     unittest.main()

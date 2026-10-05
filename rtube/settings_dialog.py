@@ -12,7 +12,7 @@ from tkinter import filedialog, messagebox
 
 import customtkinter as ctk
 
-from . import applog, settings, uikit, ytupdate
+from . import applog, appupdate, settings, uikit, ytupdate
 from .uikit import FONT_SMALL, FONT_UI, FONT_UI_BOLD, GREEN, GREEN_HOVER
 
 QUALITY_OPTIONS = [("Найкраща доступна", 0), ("2160p (4K)", 2160), ("1440p", 1440),
@@ -206,6 +206,9 @@ class SettingsDialog(ctk.CTkToplevel):
         row = self._check(body, 0, "Автоматично оновлювати yt-dlp", "ytdlp_autoupdate",
                           "Раз на 12 годин програма перевіряє свіжий yt-dlp — він лагодить "
                           "завантаження, коли YouTube щось змінює.")
+        row = self._check(body, row, "Автоматично оновлювати R-TubeUA", "app_autoupdate",
+                          "Нова версія програми з GitHub завантажується й перевіряється у фоні; "
+                          "унизу вікна з'являється «Оновити й перезапустити».")
         line = ctk.CTkFrame(body, fg_color="transparent")
         line.grid(row=row, column=0, columnspan=2, sticky="w", pady=(6, 0))
         self.btn_check = uikit.SecondaryButton(line, text="Перевірити зараз", width=150,
@@ -236,12 +239,15 @@ class SettingsDialog(ctk.CTkToplevel):
             self._set("download_dir", path)
 
     def _ytdlp_text(self):
+        from .app import APP_VERSION
         st = ytupdate.state
-        text = f"зараз yt-dlp {st.get('active') or '?'}"
+        text = f"R-TubeUA {APP_VERSION} · yt-dlp {st.get('active') or '?'}"
         if st.get("source") == "lib":
             text += " (оновлений)"
         if st.get("pending"):
-            text += f" · {st['pending']} застосується після перезапуску"
+            text += f" · yt-dlp {st['pending']} після перезапуску"
+        if appupdate.state["version"]:
+            text += f" · R-TubeUA {appupdate.state['version']} готова"
         return text
 
     def _check_now(self):
@@ -249,11 +255,18 @@ class SettingsDialog(ctk.CTkToplevel):
         result = {}
 
         def work():
+            from .app import APP_VERSION
             try:
                 result["installed"] = ytupdate.check_and_install(force=True)
             except Exception as exc:
                 applog.error("Ручна перевірка yt-dlp не вдалася", exc)
                 result["error"] = str(exc)
+            if appupdate.enabled():
+                try:
+                    result["app"] = appupdate.check_and_download(APP_VERSION, force=True)
+                except Exception as exc:
+                    applog.error("Ручна перевірка оновлення R-TubeUA не вдалася", exc)
+                    result["error"] = str(exc)
 
         thread = threading.Thread(target=work, daemon=True)
         thread.start()
@@ -269,11 +282,12 @@ class SettingsDialog(ctk.CTkToplevel):
         if result.get("error"):
             self.lbl_check.configure(text=f"не вдалося: {result['error']}"[:90],
                                      text_color=uikit.STATE_ERROR)
-        elif result.get("installed"):
-            self.lbl_check.configure(text=f"завантажено yt-dlp {result['installed']} — "
-                                          "застосується після перезапуску",
-                                     text_color=uikit.STATE_OK)
-            self.on_change("ytdlp_ready", result["installed"])
+        elif result.get("installed") or result.get("app"):
+            self.lbl_check.configure(text=self._ytdlp_text(), text_color=uikit.STATE_OK)
+            if result.get("installed"):
+                self.on_change("ytdlp_ready", result["installed"])
+            if result.get("app"):
+                self.on_change("app_ready", result["app"])
         else:
             self.lbl_check.configure(text=self._ytdlp_text() + " — найсвіжіший",
                                      text_color=uikit.STATE_OK)
