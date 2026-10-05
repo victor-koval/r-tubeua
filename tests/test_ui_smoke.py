@@ -32,6 +32,7 @@ with open(os.path.join("tests", "fixture_dubbed.json"), encoding="utf-8") as f:
 
 a = app.RTubeApp()
 m = a.manager
+p = a.jobs_panel
 m.submit = lambda job: m._emit("state", job, "queued", "У черзі")
 a.update()
 
@@ -48,7 +49,7 @@ a._show_info(INFO["webpage_url"], INFO, formats.build_choices(INFO, 1080, "uk"),
 pump()
 check(a.video_card.winfo_manager(), "картка відео показана")
 a.download(); pump()
-check(len(a.jobs) == 1 and len(a.rows) == 1, "одне завдання в списку")
+check(len(p.jobs) == 1 and len(p.rows) == 1, "одне завдання в списку")
 check(not a.video_card.winfo_manager(), "картка відео сховалась")
 check(a.ent_url.get() == "", "поле очищене")
 
@@ -58,34 +59,34 @@ entries = [(f"https://www.youtube.com/watch?v=abcdefghij{i}", f"t{i}", str(59000
 a._show_batch("", entries); pump()
 check(a.batch_card.winfo_manager(), "картка пакета показана")
 a.download_batch(); pump()
-check(len(a.jobs) == 4, "4 завдання")
+check(len(p.jobs) == 4, "4 завдання")
 check(not a.batch_card.winfo_manager(), "картка пакета сховалась")
 
 # стани: готово / помилка → «Невдалі (1)», «Звіт»
-jobs = sorted(a.jobs.values(), key=lambda j: j.id)
+jobs = sorted(p.jobs.values(), key=lambda j: j.id)
 jobs[0].state = "done"; m._emit("state", jobs[0], "done", "Готово")
 jobs[1].state = "error"; m._emit("state", jobs[1], "error", "Приватне відео")
 pump()
-check(a.btn_retry_failed.winfo_manager() and "(1)" in a.btn_retry_failed.cget("text"),
+check(p.btn_retry_failed.winfo_manager() and "(1)" in p.btn_retry_failed.cget("text"),
       "кнопка «Невдалі (1)»")
-check(a.btn_report.winfo_manager(), "кнопка «Звіт»")
+check(p.btn_report.winfo_manager(), "кнопка «Звіт»")
 
 # звіт
 with mock.patch.object(app.uikit, "select_in_explorer", return_value=True):
-    a.save_report()
+    p.save_report()
 check(any(n.startswith("zvit_") for n in os.listdir(tmp)), "звіт записано")
 
 # пауза
-a.toggle_pause(); pump()
-check(m.paused and "пауза" in a.lbl_jobs.cget("text"), "пауза")
-a.toggle_pause(); pump()
+p.toggle_pause(); pump()
+check(m.paused and "пауза" in p.lbl_jobs.cget("text"), "пауза")
+p.toggle_pause(); pump()
 check(not m.paused, "продовжено")
 
 # повтор невдалих і прибирання завершених
-a.retry_failed(); pump()
-check(len(a.jobs) == 4, "повтор не міняє кількість")
-a._clear_finished(); pump()
-check(len(a.jobs) == 3, "завершене прибрано")
+p.retry_failed(); pump()
+check(len(p.jobs) == 4, "повтор не міняє кількість")
+p.clear_finished(); pump()
+check(len(p.jobs) == 3, "завершене прибрано")
 
 a.on_closing(force=True)
 print("OK")

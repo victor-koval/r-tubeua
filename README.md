@@ -253,7 +253,10 @@ py -3 -m venv .venv
 | `rtube/watchdog.py` | Сторож зависань: стек головного потоку в лог |
 | `rtube/taskbar.py` | Прогрес на іконці в панелі задач (ITaskbarList3 на ctypes) |
 | `rtube/notify.py` | Сповіщення Windows (pystray) |
-| `rtube/app.py` | Вікно |
+| `rtube/app.py` | Вікно: поле посилання, аналіз у фоні, черга між запусками, панель задач, перезапуск |
+| `rtube/video_card.py` | Картка одного відео: якість, доріжка, субтитри, формат, ID товару |
+| `rtube/jobs.py` | Список завантажень: рядки, пауза, «Невдалі», звіт |
+| `rtube/statusbar.py` | Рядок унизу: оточення, встановлення ffmpeg, готові оновлення |
 | `rtube/batch.py` | Картка пакета |
 | `rtube/report.py` | Звіт xlsx по завантаженнях |
 | `rtube/settings_dialog.py` | Вікно налаштувань |
