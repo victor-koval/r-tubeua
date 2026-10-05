@@ -111,6 +111,91 @@ def extract_video_urls(text):
     return urls
 
 
+_ID_IN_LINE = re.compile(r"(?<!\d)\d{5,12}(?!\d)")
+
+
+def extract_id_pairs(text):
+    """Рядки «ID_товару посилання» → [(ID або None, посилання), …].
+
+    Формат — як у списках, з якими працюють на заливанні відео:
+    «580250272 https://youtube.com/shorts/…?si=… ;». ID може стояти й після
+    посилання, роздільник — пробіл, таб (рядок з Excel) або «;». Число всередині
+    самого посилання (?si=…, ID ролика) за ID товару не вважається.
+    """
+    pairs = []
+    for line in (text or "").splitlines():
+        tokens = _URL_TOKEN.findall(line)
+        if not tokens:
+            continue
+        rest = line
+        for token in tokens:
+            rest = rest.replace(token, " ")
+        ids = _ID_IN_LINE.findall(rest)
+        product_id = ids[0] if ids else None
+        for token in tokens:
+            token = token.rstrip(".,;)]}>»\"'")
+            if collection_url(token):
+                continue
+            url = clean_url(token)
+            if "watch?v=" in url:
+                pairs.append((product_id, url))
+    return pairs
+
+
+# ── транслітерація для імен файлів ──────────────────────────────────────
+# Офіційна українська транслітерація (постанова КМУ № 55 від 2010 р.) — як у
+# «Інструменти → Транслітерація» утиліти, якою готують відео до FTP. Плюс
+# російські літери: назви на YouTube бувають і російською.
+_TRANSLIT = {
+    "а": "a", "б": "b", "в": "v", "г": "h", "ґ": "g", "д": "d", "е": "e", "ж": "zh",
+    "з": "z", "и": "y", "і": "i", "к": "k", "л": "l", "м": "m", "н": "n", "о": "o",
+    "п": "p", "р": "r", "с": "s", "т": "t", "у": "u", "ф": "f", "х": "kh", "ц": "ts",
+    "ч": "ch", "ш": "sh", "щ": "shch", "ь": "",
+    "ы": "y", "э": "e", "ё": "io", "ъ": "",
+}
+# На початку слова — одне, усередині — інше (Єнакієве → Yenakiieve).
+_TRANSLIT_START = {"є": "ye", "ї": "yi", "й": "y", "ю": "yu", "я": "ya"}
+_TRANSLIT_INNER = {"є": "ie", "ї": "i", "й": "i", "ю": "iu", "я": "ia"}
+_APOSTROPHES = "'’ʼ`"
+
+
+def translit_name(text, limit=120):
+    """«Навушники Gelius HP-009 White/Yellow (2099901012913)» →
+    «navushnyky_gelius_hp_009_white_yellow_2099901012913».
+
+    Лише a-z, 0-9 і «_»: так файли називають для заливання на FTP.
+    """
+    import unicodedata
+    src = (text or "").lower()
+    out = []
+    in_word = False
+    i = 0
+    while i < len(src):
+        ch = src[i]
+        if ch == "з" and src[i + 1:i + 2] == "г":
+            out.append("zgh")          # «зг» — окремо, щоб не читалось як «zh»
+            i += 2
+            in_word = True
+            continue
+        if ch in _TRANSLIT_START:
+            out.append(_TRANSLIT_INNER[ch] if in_word else _TRANSLIT_START[ch])
+        elif ch in _TRANSLIT:
+            out.append(_TRANSLIT[ch])
+        elif ch in _APOSTROPHES:
+            pass                        # м'ясо → miaso: апостроф просто зникає
+        else:
+            plain = unicodedata.normalize("NFKD", ch).encode("ascii", "ignore").decode()
+            out.append(plain if plain else " ")
+        in_word = ch.isalpha() or (ch in _APOSTROPHES and in_word)
+        i += 1
+    name = re.sub(r"[^a-z0-9]+", "_", "".join(out)).strip("_")
+    if len(name) > limit:
+        cut = name[:limit]
+        # Обрізаємо по межі слова, якщо вона не надто далеко.
+        name = cut.rsplit("_", 1)[0] if "_" in cut[limit // 2:] else cut
+    return name.strip("_")
+
+
 def _app_dir():
     if getattr(sys, "frozen", False):
         return os.path.dirname(sys.executable)

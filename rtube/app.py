@@ -3,6 +3,7 @@
 import io
 import os
 import queue
+import re
 import threading
 import time
 import urllib.request
@@ -190,6 +191,7 @@ class RTubeApp(ctk.CTk):
         self._was_active = False
         self._error_until = 0.0
         self._settings_window = None
+        self._pending_id = ""                # ID товару з рядка «ID посилання» для картки
         self.taskbar = None
 
         self.grid_columnconfigure(0, weight=1)
@@ -335,9 +337,22 @@ class RTubeApp(ctk.CTk):
                                                text_color=uikit.TEXT_MUTED)
         self.lbl_container_hint.pack(side="left", padx=(12, 0))
 
-        label("Зберегти в", 4)
+        label("ID товару", 4)
+        id_box = ctk.CTkFrame(opts, fg_color="transparent")
+        id_box.grid(row=4, column=1, columnspan=2, sticky="ew", pady=5)
+        self.id_var = ctk.StringVar()
+        self.ent_id = ctk.CTkEntry(id_box, textvariable=self.id_var, width=160,
+                                   placeholder_text="необов'язково")
+        self.ent_id.pack(side="left")
+        uikit.bind_text_hotkeys(self.ent_id)
+        self.lbl_filename = ctk.CTkLabel(id_box, text="", font=FONT_SMALL, anchor="w",
+                                         text_color=uikit.TEXT_MUTED)
+        self.lbl_filename.pack(side="left", padx=(12, 0))
+        self.id_var.trace_add("write", lambda *_: self._update_filename_hint())
+
+        label("Зберегти в", 5)
         folder = ctk.CTkFrame(opts, fg_color="transparent")
-        folder.grid(row=4, column=1, columnspan=2, sticky="ew", pady=5)
+        folder.grid(row=5, column=1, columnspan=2, sticky="ew", pady=5)
         folder.grid_columnconfigure(0, weight=1)
         self.dir_var = ctk.StringVar(value=settings.get("download_dir"))
         ctk.CTkEntry(folder, textvariable=self.dir_var, state="readonly").grid(
@@ -533,8 +548,18 @@ class RTubeApp(ctk.CTk):
             return
         collection = tools.collection_url(text)
         urls = tools.extract_video_urls(text)
+        # Список «ID_товару посилання» (як його готують для FTP) — файли одразу
+        # отримають імена-ID, перейменовувати потім не треба.
+        pairs = tools.extract_id_pairs(text)
+        with_ids = [p for p in pairs if p[0]]
         if collection:
             self._expand(collection)
+        elif with_ids and len(pairs) > 1:
+            self.ent_url.delete(0, "end")
+            self.ent_url.insert(0, "  ".join(f"{pid or ''} {url}".strip() for pid, url in pairs))
+            self._show_batch("", [(url, url, pid or "") for pid, url in pairs])
+        elif with_ids:
+            self._analyze_one(with_ids[0][1], product_id=with_ids[0][0])
         elif len(urls) > 1:
             self.ent_url.delete(0, "end")
             self.ent_url.insert(0, "  ".join(urls))
@@ -549,10 +574,12 @@ class RTubeApp(ctk.CTk):
         self._hint(hint, uikit.STATE_INFO)
         threading.Thread(target=lambda: work(token), daemon=True).start()
 
-    def _analyze_one(self, url):
-        if url != self.ent_url.get().strip():
+    def _analyze_one(self, url, product_id=""):
+        self._pending_id = product_id or ""
+        shown = f"{product_id} {url}" if product_id else url
+        if shown != self.ent_url.get().strip():
             self.ent_url.delete(0, "end")
-            self.ent_url.insert(0, url)
+            self.ent_url.insert(0, shown)
         max_height = int(settings.get("max_height") or 0)
         preferred = settings.get("preferred_audio") or "uk"
 
@@ -619,6 +646,9 @@ class RTubeApp(ctk.CTk):
         # того, що обирали для попереднього відео.
         self.keep_original_var.set(bool(settings.get("keep_original")))
         self.subs_mode.set(SUBS_FILE if settings.get("subs_mode") == "file" else SUBS_EMBED)
+        # ID із рядка «590312170 https://…» — інакше поле порожнє для кожного нового відео.
+        self.id_var.set(getattr(self, "_pending_id", "") or "")
+        self._pending_id = ""
         self.container.configure(values=list(VIDEO_CONTAINERS))
         self.container.set(settings.get("container") if settings.get("container")
                            in VIDEO_CONTAINERS else VIDEO_CONTAINERS[0])
@@ -690,6 +720,26 @@ class RTubeApp(ctk.CTk):
     def _on_audio_change(self):
         self._sync_controls()
 
+    def _product_id(self):
+        """Лише цифри з поля «ID товару» (пробіли, «;» з таблиці відкидаються)."""
+        return re.sub(r"\D", "", self.id_var.get())
+
+    def _update_filename_hint(self):
+        """Яким буде ім'я файлу — щоб не дізнаватися про це вже в теці."""
+        if not self.choices:
+            return
+        ext = self.container.get() or "mp4"
+        product_id = self._product_id()
+        if product_id:
+            self.lbl_filename.configure(text=f"файл: {product_id}.{ext}")
+            return
+        name = tools.translit_name(self.info.get("title") or "") or "video"
+        audio = self._audio()
+        orig = formats.original_lang(self.info)
+        if audio and orig is not None and audio.lang != orig:
+            name += f"_{formats.base_lang(audio.lang)}"
+        self.lbl_filename.configure(text=f"без ID — латиницею: {name}.{ext}")
+
     def _sync_controls(self):
         if not self.choices:
             return
@@ -715,6 +765,7 @@ class RTubeApp(ctk.CTk):
             "mp3": "перекодування в 192 кбіт/с — для старих плеєрів",
         }
         self.lbl_container_hint.configure(text=hints.get(self.container.get(), ""))
+        self._update_filename_hint()
 
     # ── завантаження ──────────────────────────────────────────────────────
     def _ensure_ffmpeg(self, needed):
@@ -746,7 +797,8 @@ class RTubeApp(ctk.CTk):
             audio_label=audio.label if audio else "",
             container=self.container.get(), keep_original=keep_original,
             sub_key=sub.key if sub and not audio_only else (),
-            subs_mode="file" if self.subs_mode.get() == SUBS_FILE else "embed")
+            subs_mode="file" if self.subs_mode.get() == SUBS_FILE else "embed",
+            product_id=self._product_id())
         if not self._ensure_ffmpeg(downloader.needs_ffmpeg(job, progressive=video.has_audio)):
             return
         # Вибір у картці стосується лише цього завантаження — значення за
@@ -780,12 +832,14 @@ class RTubeApp(ctk.CTk):
 
     def _enqueue(self, jobs):
         """Ставить у чергу, пропускаючи ролики, що вже чекають чи качаються. Повертає, скільки додано."""
-        busy = {r.job.url for r in self.rows.values() if r.job.state in ACTIVE}
+        # Ключ — ролик І товар: той самий ролик для двох товарів — це два файли.
+        busy = {(r.job.url, r.job.product_id) for r in self.rows.values() if r.job.state in ACTIVE}
         added = 0
         for job in jobs:
-            if job.url in busy:
+            key = (job.url, job.product_id)
+            if key in busy:
                 continue
-            busy.add(job.url)
+            busy.add(key)
             self._add_row(job)
             self._session.add(job.id)
             self.manager.submit(job)

@@ -25,7 +25,7 @@ class QueueStoreTest(unittest.TestCase):
                                audio_lang="uk", audio_label="Українська", container="mkv",
                                keep_original=True, sub_key=("uk", False), subs_mode="file")
         batch = downloader.Job(url="https://www.youtube.com/watch?v=pn6mZ0Bcugo", title="Килимок",
-                               out_dir=r"C:\v", sub_key=None,
+                               out_dir=r"C:\v", sub_key=None, product_id="590312170",
                                prefs={"max_height": 720, "audio": "uk", "subs": "author_uk"})
         queuestore.save([exact, batch], self.path)
         with open(self.path, encoding="utf-8") as f:
@@ -35,6 +35,7 @@ class QueueStoreTest(unittest.TestCase):
                          ((1080, 30, "H.264"), ("uk", False), "mkv", True, None))
         self.assertEqual((b.video_key, b.audio_lang, b.sub_key, b.prefs["max_height"]),
                          (None, None, None, 720))
+        self.assertEqual((a.product_id, b.product_id), ("", "590312170"))
         self.assertNotEqual(a.id, exact.id)            # нові завдання, а не ті самі
 
     def test_broken_file_is_empty_queue(self):

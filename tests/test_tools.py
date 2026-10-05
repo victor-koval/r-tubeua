@@ -53,6 +53,51 @@ class JsRuntimeTest(unittest.TestCase):
         self.assertEqual(usable, {"node": {"path": r"C:\node.exe"}})
 
 
+class TranslitTest(unittest.TestCase):
+    def test_example_from_video(self):
+        # Дослівно з «Інструменти → Транслітерація» утиліти, якою готують відео до FTP.
+        self.assertEqual(
+            tools.translit_name("Навушники Gelius MIAOSpace GP HP-009 White/Yellow (2099901012913)"),
+            "navushnyky_gelius_miaospace_gp_hp_009_white_yellow_2099901012913")
+
+    def test_kmu_2010_rules(self):
+        cases = {
+            "Єнакієве": "yenakiieve", "Їжакевич": "yizhakevych", "Йосипівка": "yosypivka",
+            "Юрій": "yurii", "Яготин": "yahotyn", "Згорани": "zghorany",
+            "м'ясо Знам’янка": "miaso_znamianka", "Щастя Ґанок": "shchastia_ganok",
+            'Килимок для миши "Морський"': "kylymok_dlia_myshy_morskyi",
+            "Нужные Вещи — эхо съёмка": "nuzhnye_veshchy_ekho_siomka",
+            "#іграшки!!!": "ihrashky", "": "",
+        }
+        for text, expected in cases.items():
+            self.assertEqual(tools.translit_name(text), expected, text)
+
+    def test_only_safe_chars_and_limit(self):
+        name = tools.translit_name("Дуже " * 60 + "довга назва", limit=50)
+        self.assertLessEqual(len(name), 50)
+        self.assertRegex(name, r"^[a-z0-9_]+$")
+        self.assertFalse(name.endswith("_"))
+
+
+class IdPairsTest(unittest.TestCase):
+    def test_lines_like_in_video(self):
+        text = ("580250272 https://youtube.com/shorts/IAlRuoMApic?si=glwKx_Tezs8zDeT9 ;\n"
+                "610122062 https://youtube.com/shorts/FTBLOAo6tHU?si=0xFBemISn6xyD52y ;\n\n"
+                "https://youtu.be/pn6mZ0Bcugo\t593505175\n"                 # з Excel, ID після
+                "512333429;https://www.youtube.com/watch?v=1zElSYng0Xg&t=4s\n"
+                "https://www.youtube.com/watch?v=ZNMNKI4xPbY\n")            # без ID
+        self.assertEqual(tools.extract_id_pairs(text), [
+            ("580250272", "https://www.youtube.com/watch?v=IAlRuoMApic"),
+            ("610122062", "https://www.youtube.com/watch?v=FTBLOAo6tHU"),
+            ("593505175", "https://www.youtube.com/watch?v=pn6mZ0Bcugo"),
+            ("512333429", "https://www.youtube.com/watch?v=1zElSYng0Xg"),
+            (None, "https://www.youtube.com/watch?v=ZNMNKI4xPbY")])
+
+    def test_numbers_inside_url_are_not_ids(self):
+        self.assertEqual(tools.extract_id_pairs("https://youtu.be/pn6mZ0Bcugo?t=123456"),
+                         [(None, "https://www.youtube.com/watch?v=pn6mZ0Bcugo")])
+
+
 class MinSecTest(unittest.TestCase):
     def test_format(self):
         from rtube import uikit

@@ -16,7 +16,7 @@ from .settings import CONFIG_DIR
 QUEUE_PATH = os.path.join(CONFIG_DIR, "queue.json")
 
 _FIELDS = ("url", "title", "out_dir", "container", "keep_original", "subs_mode",
-           "video_key", "audio_lang", "audio_label", "sub_key", "prefs")
+           "video_key", "audio_lang", "audio_label", "sub_key", "prefs", "product_id")
 
 
 def job_to_dict(job):

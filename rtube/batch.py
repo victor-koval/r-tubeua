@@ -91,11 +91,14 @@ class BatchCard(uikit.Card):
                               command=app.close_batch).grid(row=0, column=1, padx=(8, 0))
 
     def show(self, title, entries):
-        """entries — [(посилання, назва), …]."""
-        self.entries = list(entries)
+        """entries — [(посилання, назва), …] або [(посилання, назва, ID товару), …]."""
+        self.entries = [(e[0], e[1], e[2] if len(e) > 2 else "") for e in entries]
         n = len(self.entries)
+        with_ids = sum(1 for e in self.entries if e[2])
+        if with_ids:
+            title = title or ("з ID товарів" if with_ids == n else f"з них {with_ids} з ID товарів")
         self.lbl_title.configure(text=f"Пакет: {n} відео" + (f" — {title}" if title else ""))
-        names = [t for _, t in self.entries[:PREVIEW]]
+        names = [f"{pid} — {name}" if pid else name for _, name, pid in self.entries[:PREVIEW]]
         more = f"\n… і ще {n - PREVIEW}" if n > PREVIEW else ""
         self.lbl_preview.configure(text="\n".join(f"•  {t}" for t in names) + more)
 
@@ -147,5 +150,5 @@ class BatchCard(uikit.Card):
                                container=self.container.get(),
                                keep_original=bool(self.keep_original_var.get()) and not audio_only,
                                sub_key=None, subs_mode=settings.get("subs_mode"),
-                               prefs=dict(prefs))
-                for url, title in self.entries[:self._count()]]
+                               product_id=product_id or "", prefs=dict(prefs))
+                for url, title, product_id in self.entries[:self._count()]]

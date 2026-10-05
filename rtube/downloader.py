@@ -149,15 +149,18 @@ def track_titles(info, fmt):
     return tracks
 
 
-def track_metadata_args(info, fmt):
+def track_metadata_args(info, fmt, source_url=None):
     """Аргументи ffmpeg, що підписують аудіодоріжки мовою й назвою.
 
     Без них склеєні доріжки мають мову «und», і плеєр показує «Доріжка 1 /
     Доріжка 2». Передаються склеювачу yt-dlp (postprocessor_args), тож файл
     не переписується вдруге. Склеювач кладе доріжки в порядку формату:
     обрана — a:0, оригінал — a:1.
+
+    source_url пишеться в коментар файлу: за ним pick_id_target упізнає, з
+    якого ролика вже скачано «590312170.mp4».
     """
-    args = []
+    args = ["-metadata", f"comment={source_url}"] if source_url else []
     for i, (lang, title) in enumerate(track_titles(info, fmt)):
         base = formats.base_lang(lang)
         # short2long дивиться лише на дві перші літери: «fil» (філіппінська)
@@ -216,6 +219,47 @@ def probe_height(path):
         return None
 
 
+def probe_comment(path):
+    """Коментар файлу (туди пишемо посилання на ролик) або None."""
+    ffprobe = tools.find_ffprobe()
+    if not ffprobe:
+        return None
+    try:
+        out = subprocess.run(
+            [ffprobe, "-v", "error", "-show_entries", "format_tags=comment",
+             "-of", "default=nw=1:nk=1", path],
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=20,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0)).stdout.strip()
+        return out or None
+    except Exception:
+        return None
+
+
+MAX_ID_SUFFIX = 99
+
+
+def pick_id_target(out_dir, product_id, ext, url, height,
+                   comment_of=probe_comment, height_of=probe_height):
+    """Куди качати ролик для товару: (шлях, дія).
+
+    дія «new» — файлу немає; «skip» — цей самий ролик тієї ж якості вже є;
+    «overwrite» — цей самий ролик, але іншої якості (на FTP потрібен один
+    файл, тож старий замінюється). Інший ролик того ж товару — наступне ім'я:
+    590312170.mp4 → 590312170_2.mp4 → _3… Файл без коментаря (скачаний до
+    цієї версії або іншою програмою) вважається іншим роликом.
+    """
+    for n in range(1, MAX_ID_SUFFIX + 1):
+        name = product_id if n == 1 else f"{product_id}_{n}"
+        path = os.path.join(out_dir, f"{name}.{ext}")
+        if not os.path.isfile(path):
+            return path, "new"
+        if comment_of(path) == url:
+            if height is None or height_of(path) == height:
+                return path, "skip"
+            return path, "overwrite"
+    raise DownloadError(f"Для товару {product_id} уже {MAX_ID_SUFFIX} різних відео в теці")
+
+
 def needs_ffmpeg(job, progressive=False):
     """Чи знадобиться ffmpeg: склеювання, mp3 або субтитри.
 
@@ -246,6 +290,7 @@ class Job:
     keep_original: bool = False
     sub_key: tuple = ()             # () — без субтитрів, None — вирішити за prefs
     subs_mode: str = "embed"        # embed / file
+    product_id: str = ""            # ID товару — тоді файл зветься «590312170.mp4»
     # max_height: 0 — найкраща, AUDIO_ONLY — лише звук; audio: "uk" / "orig";
     # subs: "none" / "author_uk"
     prefs: dict = field(default_factory=dict)
@@ -262,7 +307,7 @@ class Job:
         return self.prefs.get("max_height") == formats.AUDIO_ONLY
 
     def summary(self):
-        parts = []
+        parts = [f"ID {self.product_id}"] if self.product_id else []
         if self.audio_only:
             parts.append(f"лише звук, {self.container}")
         elif self.video_key:
@@ -285,7 +330,8 @@ class Job:
                    video_key=self.video_key, audio_lang=self.audio_lang,
                    audio_label=self.audio_label, container=self.container,
                    keep_original=self.keep_original, sub_key=self.sub_key,
-                   subs_mode=self.subs_mode, prefs=dict(self.prefs))
+                   subs_mode=self.subs_mode, product_id=self.product_id,
+                   prefs=dict(self.prefs))
 
 
 def apply_prefs(job, info):
@@ -396,7 +442,21 @@ class _Runner:
         self.created_files = set()  # готові файли, створені саме цим запуском
 
     # ── параметри yt-dlp ──
-    def _opts(self, info, with_subs=True, quality_in_name=False):
+    def _default_name(self, info, quality_in_name=False):
+        """Ім'я без ID товару — латиницею, як для FTP: «kylymok_dlia_myshy_morskyi»,
+        з «_uk», якщо доріжка не оригінальна, і з «_720p», якщо в теці вже
+        лежить файл іншої якості."""
+        job = self.job
+        name = tools.translit_name(info.get("title") or "") or tools.translit_name(info.get("id") or "") \
+            or "video"
+        orig = formats.original_lang(info)
+        if job.audio_lang and orig is not None and job.audio_lang != orig:
+            name += f"_{formats.base_lang(job.audio_lang)}"
+        if quality_in_name and not job.audio_only:
+            name += f"_{quality_tag(job.video_key)}"
+        return name
+
+    def _opts(self, info, with_subs=True, quality_in_name=False, name=None):
         job = self.job
         fmt = formats.resolve_format(info, job.video_key, job.audio_lang, job.container,
                                      job.keep_original, audio_ext=job.container)
@@ -423,12 +483,9 @@ class _Runner:
             f = next((x for x in info.get("formats") or [] if x.get("format_id") == fid), {})
             self.part_sizes[fid] = f.get("filesize") or f.get("filesize_approx") or 0
 
-        name = "%(title).150B"
-        orig = formats.original_lang(info)
-        if job.audio_lang and orig is not None and job.audio_lang != orig:
-            name += f" [{formats.base_lang(job.audio_lang)}]"
-        if quality_in_name and not job.audio_only:
-            name += f" [{quality_tag(job.video_key)}]"
+        # Ім'я — лише [a-z0-9_] (ID товару або транслітерація), тож у шаблон
+        # yt-dlp його можна ставити без екранування «%».
+        name = name or self._default_name(info, quality_in_name)
         opts = base_opts()
         opts.update({
             "format": fmt,
@@ -444,7 +501,7 @@ class _Runner:
         if fmt.count("+") >= 2:
             opts["allow_multiple_audio_streams"] = True
         if "+" in fmt and ffmpeg:
-            meta = track_metadata_args(info, fmt)
+            meta = track_metadata_args(info, fmt, source_url=job.url)
             if meta:
                 opts["postprocessor_args"] = {"merger+ffmpeg_o": meta}
 
@@ -607,8 +664,12 @@ class _Runner:
         return note
 
     def _download(self, info, with_subs):
-        opts = self._opts(info, with_subs)
-        existing = self._existing_target(info, opts)
+        if self.job.product_id:
+            opts = self._id_opts(info, with_subs)
+            existing = None
+        else:
+            opts = self._opts(info, with_subs)
+            existing = self._existing_target(info, opts)
         if existing:
             # yt-dlp, побачивши файл із таким іменем, мовчки пропустив би
             # завантаження — і на запит 720p лишився б старий 1080p під
@@ -631,6 +692,24 @@ class _Runner:
             # 140-19 гарантовано відповідають тим самим доріжкам.
             return ydl.process_ie_result(ydl.sanitize_info(copy.deepcopy(info), True),
                                          download=True)
+
+    def _id_opts(self, info, with_subs):
+        """Ім'я з ID товару: 590312170, 590312170_2… — див. pick_id_target."""
+        job = self.job
+        probe = self._opts(info, with_subs, name=job.product_id)
+        ext = final_ext(info, probe["format"], job)
+        height = None if job.audio_only else job.video_key[0]
+        path, action = pick_id_target(job.out_dir, job.product_id, ext, job.url, height)
+        if action == "skip":
+            applog.info(f"Уже є: {path} (той самий ролик) — не качаю вдруге")
+            raise AlreadyHave(path)
+        name = os.path.splitext(os.path.basename(path))[0]
+        opts = probe if name == job.product_id else self._opts(info, with_subs, name=name)
+        if action == "overwrite":
+            # Той самий ролик іншої якості: на FTP потрібен один файл на ролик.
+            applog.info(f"{path}: той самий ролик іншої якості — перезаписую")
+            opts["overwrites"] = True
+        return opts
 
     def _existing_target(self, info, opts):
         """Шлях готового файлу, якщо він уже лежить у теці, інакше None.

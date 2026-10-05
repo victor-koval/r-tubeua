@@ -112,6 +112,72 @@ class ChildProcessTest(unittest.TestCase):
         self.assertTrue(getattr(yt_dlp.utils.Popen, "_rtube_tracked", False))
 
 
+class IdTargetTest(unittest.TestCase):
+    """Ім'я файлу з ID товару: 590312170.mp4, _2, «Уже є», перезапис."""
+
+    URL = "https://www.youtube.com/watch?v=pn6mZ0Bcugo"
+    OTHER = "https://www.youtube.com/watch?v=1G01ROKhAAw"
+
+    def setUp(self):
+        import tempfile
+        self.tmp = tempfile.TemporaryDirectory()
+        self.files = {}         # ім'я → (коментар, висота)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def put(self, name, comment, height=720):
+        path = os.path.join(self.tmp.name, name)
+        open(path, "wb").close()
+        self.files[path] = (comment, height)
+
+    def pick(self, url=URL, height=720):
+        path, action = downloader.pick_id_target(
+            self.tmp.name, "590312170", "mp4", url, height,
+            comment_of=lambda p: self.files[p][0], height_of=lambda p: self.files[p][1])
+        return os.path.basename(path), action
+
+    def test_free(self):
+        self.assertEqual(self.pick(), ("590312170.mp4", "new"))
+
+    def test_same_video_same_quality_skips(self):
+        self.put("590312170.mp4", self.URL)
+        self.assertEqual(self.pick(), ("590312170.mp4", "skip"))
+
+    def test_same_video_other_quality_overwrites(self):
+        self.put("590312170.mp4", self.URL, height=1080)
+        self.assertEqual(self.pick(height=720), ("590312170.mp4", "overwrite"))
+
+    def test_other_video_gets_suffix(self):
+        self.put("590312170.mp4", self.OTHER)
+        self.assertEqual(self.pick(), ("590312170_2.mp4", "new"))
+        self.put("590312170_2.mp4", None)          # старий файл без коментаря — «інший»
+        self.assertEqual(self.pick(), ("590312170_3.mp4", "new"))
+
+    def test_same_video_found_under_suffix(self):
+        self.put("590312170.mp4", self.OTHER)
+        self.put("590312170_2.mp4", self.URL)
+        self.assertEqual(self.pick(), ("590312170_2.mp4", "skip"))
+
+    def test_source_url_written_to_comment(self):
+        args = downloader.track_metadata_args(INFO, "137+140-19", source_url=self.URL)
+        self.assertEqual(args[:2], ["-metadata", f"comment={self.URL}"])
+        self.assertNotIn("comment=", " ".join(downloader.track_metadata_args(INFO, "137+140-19")))
+
+    def test_name_without_id_is_translit(self):
+        job = downloader.Job(url=self.URL, title="t", out_dir=".", video_key=(1080, 30, "H.264"),
+                             audio_lang="uk")
+        runner = downloader._Runner(job, lambda *a: None)
+        self.assertEqual(runner._default_name(INFO), "mirror_mi_fashion_dolls_smyths_toys_uk")
+        self.assertEqual(runner._default_name(INFO, quality_in_name=True),
+                         "mirror_mi_fashion_dolls_smyths_toys_uk_1080p")
+
+    def test_summary_shows_id(self):
+        job = downloader.Job(url=self.URL, title="t", out_dir=".", product_id="590312170")
+        self.assertTrue(job.summary().startswith("ID 590312170"))
+        self.assertEqual(job.clone().product_id, "590312170")
+
+
 class DiskTest(unittest.TestCase):
     def test_needed_bytes(self):
         self.assertEqual(downloader.needed_bytes([1000, 0]), 2100)
