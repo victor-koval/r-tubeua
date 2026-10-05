@@ -16,7 +16,7 @@ SCRIPT = r"""
 import json, os, sys, tempfile
 from unittest import mock
 sys.path.insert(0, os.getcwd())
-from rtube import app, formats, settings
+from rtube import app, formats, settings, tools
 
 tmp = tempfile.mkdtemp()
 real_get = settings.get
@@ -26,6 +26,14 @@ settings_get = mock.patch.object(settings, "get", side_effect=lambda k: False if
                                  else (tmp if k == "download_dir" else real_get(k)))
 settings_set = mock.patch.object(settings, "set_many")
 settings_get.start(); settings_set.start()
+# На сервері CI немає ffmpeg — «Завантажити» спитало б, чи його поставити.
+mock.patch.object(tools, "find_ffmpeg", return_value="ffmpeg.exe").start()
+# Несподіване вікно-питання без людини поруч висіло б до тайм-ауту — хай
+# краще тест одразу падає й каже, що за вікно.
+import tkinter.messagebox as _mb
+for _name in ("askyesno", "showerror", "showinfo", "showwarning"):
+    mock.patch.object(_mb, _name, side_effect=lambda *a, _n=_name, **k: (
+        print("FAIL: несподіване вікно", _n, a[1:2], flush=True), os._exit(1))).start()
 
 with open(os.path.join("tests", "fixture_dubbed.json"), encoding="utf-8") as f:
     INFO = json.load(f)
