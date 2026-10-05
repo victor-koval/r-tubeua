@@ -24,7 +24,7 @@ from . import (applog, downloader, ffinstall, formats, notify, queuestore, repor
 from .uikit import FONT_SMALL, FONT_UI, FONT_UI_BOLD, GREEN, GREEN_HOVER
 
 APP_TITLE = "R-TubeUA"
-APP_VERSION = "1.2.0"
+APP_VERSION = "1.3.0"
 
 DEFAULT_SIZE = (1000, 800)
 MIN_SIZE = (880, 660)
