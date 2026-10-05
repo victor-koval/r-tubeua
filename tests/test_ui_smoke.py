@@ -58,6 +58,21 @@ entries = [(f"https://www.youtube.com/watch?v=abcdefghij{i}", f"t{i}", str(59000
            for i in range(3)]
 a._show_batch("", entries); pump()
 check(a.batch_card.winfo_manager(), "картка пакета показана")
+b = a.batch_card
+check(len(b.tree.get_children()) == 3, "у таблиці 3 рядки")
+b._remove(["1"]); pump()
+check(len(b.entries) == 2 and "2 відео" in b.btn_download.cget("text"), "✕ прибрав рядок")
+b.entries.append(entries[1])
+b._render(); pump()
+
+# список, вставлений у поле: поле очищається, у таблиці всі рядки
+a.ent_url.insert(0, "\n".join(["590312170 https://youtu.be/pn6mZ0Bcugo ;", "шапка",
+                                "590312171 https://youtu.be/1G01ROKhAAw"]))
+a.analyze(); pump()
+check(a.ent_url.get() == "", "поле після списку порожнє")
+check(len(b.tree.get_children()) == 2, "список у таблиці")
+check("пропущено: 1" in a.lbl_url_hint.cget("text"), "підказка про пропущений рядок")
+a._show_batch("", entries); pump()
 a.download_batch(); pump()
 check(len(p.jobs) == 4, "4 завдання")
 check(not a.batch_card.winfo_manager(), "картка пакета сховалась")

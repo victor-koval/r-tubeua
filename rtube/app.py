@@ -324,15 +324,11 @@ class RTubeApp(ctk.CTk, *_DND_BASES):
         if collection:
             self._expand(collection)
         elif with_ids and len(pairs) > 1:
-            self.ent_url.delete(0, "end")
-            self.ent_url.insert(0, "  ".join(f"{pid or ''} {url}".strip() for pid, url in pairs))
-            self._show_batch("", [(url, url, pid or "") for pid, url in pairs])
+            self._show_list(text, [(url, url, pid or "") for pid, url in pairs])
         elif with_ids:
             self._analyze_one(with_ids[0][1], product_id=with_ids[0][0])
         elif len(urls) > 1:
-            self.ent_url.delete(0, "end")
-            self.ent_url.insert(0, "  ".join(urls))
-            self._show_batch("", [(u, u) for u in urls])
+            self._show_list(text, [(u, u) for u in urls])
         else:
             self._analyze_one(urls[0] if urls else tools.clean_url(text))
 
@@ -395,6 +391,19 @@ class RTubeApp(ctk.CTk, *_DND_BASES):
         self.batch_card.grid(row=2, column=0, sticky="ew", padx=22, pady=(0, 10))
         self.hint(f"Знайдено {len(entries)} відео — оберіть параметри для всіх одразу",
                   uikit.STATE_OK)
+
+    def _show_list(self, text, entries):
+        """Вставлений список — у таблицю картки пакета; поле звільняється для
+        наступного посилання, а не тримає всі рядки одним довгим рядком."""
+        self.ent_url.delete(0, "end")
+        self._show_batch("", entries)
+        with_ids = sum(1 for e in entries if len(e) > 2 and e[2])
+        parts = [f"Список з {len(entries)} посилань" + (f" (з ID — {with_ids})" if with_ids else "")
+                 + " — у картці нижче"]
+        skipped = tools.count_lines_without_links(text)
+        if skipped:
+            parts.append(f"рядків без посилання пропущено: {skipped}")
+        self.hint("  ·  ".join(parts), uikit.STATE_OK)
 
     def _show_file_batch(self, name, result):
         entries = [(url, url, pid or "") for pid, url in result.pairs]
@@ -561,6 +570,7 @@ class RTubeApp(ctk.CTk, *_DND_BASES):
     def _on_setting_changed(self, key, value):
         if key == "theme":
             ctk.set_appearance_mode(THEMES.get(value, "Dark"))
+            self.batch_card.apply_style()
         elif key == "download_dir":
             self.dir_var.set(settings.get("download_dir"))
         elif key == "taskbar_progress" and not value and self.taskbar:

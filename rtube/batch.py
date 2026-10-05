@@ -3,7 +3,14 @@
 Ролики тут не аналізуються наперед (на каналі їх сотні): кожен стає в чергу з
 prefs, а якість і доріжку завантажувач визначає сам, коли до нього дійде
 черга (downloader.apply_prefs) — за тими ж правилами, що й картка одного відео.
+
+Усі ролики пакета видно таблицею: №, ID товару, ролик і примітка (копія,
+вже в черзі, поза «Перші N»); ✕ прибирає рядок. Таблиця — ttk.Treeview: вона
+малює й тисячі рядків миттєво, а рядок із CTk-віджетів коштує ~25 мс.
 """
+
+from tkinter import ttk
+from urllib.parse import parse_qs, urlparse
 
 import customtkinter as ctk
 
@@ -14,7 +21,46 @@ from .uikit import FONT_SMALL, FONT_UI_BOLD, GREEN, GREEN_HOVER
 AUDIO_ONLY_LABEL = "🎵  Лише звук (без відео)"
 SUBS_OPTIONS = [("Без субтитрів", "none"), ("Українські від автора, якщо є", "author_uk")]
 LIMITS = (10, 25, 50, 100)
-PREVIEW = 5
+TABLE_ROWS = 7
+REMOVE = "✕"
+COLUMNS = ("n", "pid", "video", "note", "x")
+
+
+def short_url(url):
+    """https://www.youtube.com/watch?v=pn6mZ0Bcugo → youtu.be/pn6mZ0Bcugo."""
+    parsed = urlparse(url)
+    video_id = (parse_qs(parsed.query).get("v") or [""])[0]
+    if video_id:
+        return f"youtu.be/{video_id}"
+    return (parsed.netloc + parsed.path) or url
+
+
+def describe(entries, busy=(), limit=None):
+    """Рядки таблиці: [{n, pid, video, note, kind}, …].
+
+    entries — [(посилання, назва, ID товару), …]; busy — {(посилання, ID)}, що вже
+    чекають чи качаються; limit — скільки беремо («Перші N»), None — усі.
+    kind: "" — звичайний; "copy" — той самий ролик для іншого товару (буде копія);
+    "skip" — пропуститься (повтор рядка або вже в черзі); "over" — поза «Перші N».
+    """
+    rows, first_of_url, seen = [], {}, {}
+    for i, (url, title, pid) in enumerate(entries):
+        n = i + 1
+        key = (url, pid or "")
+        video = title if title and title != url else short_url(url)
+        note, kind = "", ""
+        if limit is not None and i >= limit:
+            note, kind = f"поза «Перші {limit}» — не качатиметься", "over"
+        elif key in busy:
+            note, kind = "уже в черзі — пропуститься", "skip"
+        elif key in seen:
+            note, kind = f"повтор рядка {seen[key]} — пропуститься", "skip"
+        elif url in first_of_url:
+            note, kind = f"той самий ролик, що в рядку {first_of_url[url]} — буде копія", "copy"
+        seen.setdefault(key, n)
+        first_of_url.setdefault(url, n)
+        rows.append({"n": n, "pid": pid or "", "video": video, "note": note, "kind": kind})
+    return rows
 
 
 class BatchCard(uikit.Card):
@@ -22,18 +68,39 @@ class BatchCard(uikit.Card):
         super().__init__(master)
         self.app = app
         self.entries = []
+        self.title_suffix = ""
+        self._audio_only = None
         self.grid_columnconfigure(0, weight=1)
 
         self.lbl_title = ctk.CTkLabel(self, text="", font=uikit.FONT_VIDEO_TITLE, anchor="w",
                                       justify="left")
-        self.lbl_title.grid(row=0, column=0, sticky="ew", padx=16, pady=(16, 0))
+        self.lbl_title.grid(row=0, column=0, sticky="ew", padx=16, pady=(14, 0))
         uikit.wrap_to_width(self.lbl_title)
-        self.lbl_preview = ctk.CTkLabel(self, text="", font=FONT_SMALL, anchor="w",
-                                        justify="left", text_color=uikit.TEXT_MUTED)
-        self.lbl_preview.grid(row=1, column=0, sticky="ew", padx=16, pady=(2, 6))
+        self.lbl_summary = ctk.CTkLabel(self, text="", font=FONT_SMALL, anchor="w",
+                                        text_color=uikit.TEXT_MUTED)
+        self.lbl_summary.grid(row=1, column=0, sticky="ew", padx=16, pady=(0, 6))
+
+        table = ctk.CTkFrame(self, fg_color="transparent")
+        table.grid(row=2, column=0, sticky="ew", padx=16, pady=(0, 8))
+        table.grid_columnconfigure(0, weight=1)
+        self.tree = ttk.Treeview(table, columns=COLUMNS, show="headings", height=TABLE_ROWS,
+                                 selectmode="extended", style="Batch.Treeview")
+        for col, text, width, stretch, anchor in (
+                ("n", "№", 44, False, "e"), ("pid", "ID товару", 110, False, "w"),
+                ("video", "Ролик", 260, True, "w"), ("note", "Примітка", 260, True, "w"),
+                ("x", "", 34, False, "center")):
+            self.tree.heading(col, text=text, anchor=anchor)
+            self.tree.column(col, width=width, minwidth=width if not stretch else 120,
+                             stretch=stretch, anchor=anchor)
+        self.tree.grid(row=0, column=0, sticky="ew")
+        self.scroll = ctk.CTkScrollbar(table, command=self.tree.yview)
+        self.scroll.grid(row=0, column=1, sticky="ns", padx=(4, 0))
+        self.tree.configure(yscrollcommand=self.scroll.set)
+        self.tree.bind("<Button-1>", self._on_click, add="+")
+        self.tree.bind("<Delete>", lambda e: self._remove_selected())
 
         opts = ctk.CTkFrame(self, fg_color="transparent")
-        opts.grid(row=2, column=0, sticky="ew", padx=16)
+        opts.grid(row=3, column=0, sticky="ew", padx=16)
         opts.grid_columnconfigure(1, weight=1)
 
         def label(text, row):
@@ -42,7 +109,7 @@ class BatchCard(uikit.Card):
 
         label("Скільки взяти", 0)
         self.opt_count = ctk.CTkOptionMenu(opts, values=["—"], width=220, dynamic_resizing=False,
-                                           command=lambda _: self._sync())
+                                           command=lambda _: self._render())
         self.opt_count.grid(row=0, column=1, sticky="w", pady=4)
 
         label("Якість", 1)
@@ -81,7 +148,7 @@ class BatchCard(uikit.Card):
                               command=app._choose_dir).grid(row=0, column=1, padx=(8, 0))
 
         buttons = ctk.CTkFrame(self, fg_color="transparent")
-        buttons.grid(row=3, column=0, sticky="ew", padx=16, pady=(6, 14))
+        buttons.grid(row=4, column=0, sticky="ew", padx=16, pady=(6, 14))
         buttons.grid_columnconfigure(0, weight=1)
         self.btn_download = ctk.CTkButton(buttons, text="", height=44, font=uikit.FONT_BIG_BUTTON,
                                           command=app.download_batch)
@@ -89,21 +156,99 @@ class BatchCard(uikit.Card):
         uikit.SecondaryButton(buttons, text="Скасувати", width=110, height=44,
                               command=app.close_batch).grid(row=0, column=1, padx=(8, 0))
 
+    # ── таблиця ──
+    def apply_style(self):
+        """Кольори таблиці під поточну тему (ttk теми CustomTkinter не бачить)."""
+        i = 1 if uikit.is_dark() else 0
+        style = ttk.Style(self)
+        if style.theme_use() != "clam":
+            style.theme_use("clam")     # лише в clam Treeview слухається кольорів
+        bg, fg = uikit.SURFACE_RAISED[i], uikit.TEXT[i]
+        # У clam рамку малюють три кольори — усі під тло, щоб не було світлої обвідки.
+        style.configure("Batch.Treeview", background=bg, fieldbackground=bg, foreground=fg,
+                        rowheight=24, borderwidth=0, bordercolor=bg, lightcolor=bg,
+                        darkcolor=bg, font=(uikit.FONT_FAMILY, 10))
+        style.configure("Batch.Treeview.Heading", background=uikit.SURFACE[i],
+                        foreground=uikit.TEXT_MUTED[i], relief="flat", borderwidth=0,
+                        bordercolor=uikit.SURFACE[i], lightcolor=uikit.SURFACE[i],
+                        darkcolor=uikit.SURFACE[i], font=(uikit.FONT_FAMILY, 10, "bold"))
+        style.map("Batch.Treeview.Heading", background=[("active", uikit.SURFACE[i])])
+        style.map("Batch.Treeview", background=[("selected", uikit.NEUTRAL_HOVER[i])],
+                  foreground=[("selected", fg)])
+        self.tree.tag_configure("copy", foreground=uikit.STATE_INFO[i])
+        self.tree.tag_configure("skip", foreground=uikit.STATE_WARN[i])
+        self.tree.tag_configure("over", foreground=uikit.TEXT_MUTED[i])
+
+    def _render(self):
+        """Таблиця, заголовок і кнопка — з поточних entries і «Скільки взяти»."""
+        busy = {(j.url, j.product_id) for j in self.app.jobs_panel.active_jobs()}
+        rows = describe(self.entries, busy, self._limit())
+        self.tree.delete(*self.tree.get_children())
+        for row in rows:
+            self.tree.insert("", "end", iid=str(row["n"] - 1), tags=(row["kind"],),
+                             values=(row["n"], row["pid"], row["video"], row["note"], REMOVE))
+        has_ids = any(r["pid"] for r in rows)
+        self.tree.configure(displaycolumns=COLUMNS if has_ids else ("n", "video", "note", "x"),
+                            height=max(1, min(TABLE_ROWS, len(rows))))
+        if len(rows) > TABLE_ROWS:
+            self.scroll.grid()
+        else:
+            self.scroll.grid_remove()
+
+        n = len(self.entries)
+        self.lbl_title.configure(text=f"Пакет: {n} відео" +
+                                 (f" — {self.title_suffix}" if self.title_suffix else ""))
+        copies = sum(1 for r in rows if r["kind"] == "copy")
+        skipped = sum(1 for r in rows if r["kind"] == "skip")
+        with_ids = sum(1 for r in rows if r["pid"])
+        parts = []
+        if with_ids and with_ids < n:
+            parts.append(f"з ID — {with_ids}, решта назвуться латиницею")
+        if copies:
+            parts.append(f"копій того самого ролика: {copies} (качається раз)")
+        if skipped:
+            parts.append(f"пропуститься: {skipped}")
+        parts.append("✕ або Delete — прибрати рядок")
+        self.lbl_summary.configure(text="  ·  ".join(parts))
+        self._sync()
+
+    def _on_click(self, event):
+        if self.tree.identify_region(event.x, event.y) != "cell":
+            return None
+        column = self.tree.identify_column(event.x)          # «#N» серед показаних
+        shown = self.tree.cget("displaycolumns")
+        if isinstance(shown, str):
+            shown = self.tree.tk.splitlist(shown)
+        index = int(column[1:]) - 1
+        if 0 <= index < len(shown) and shown[index] == "x":
+            item = self.tree.identify_row(event.y)
+            if item:
+                self._remove([item])
+                return "break"
+        return None
+
+    def _remove_selected(self):
+        self._remove(self.tree.selection())
+
+    def _remove(self, items):
+        for i in sorted({int(i) for i in items}, reverse=True):
+            if 0 <= i < len(self.entries):
+                del self.entries[i]
+        if not self.entries:
+            self.app.close_batch()
+            return
+        self._refresh_counts()
+        self._render()
+
+    # ── показ ──
     def show(self, title, entries):
         """entries — [(посилання, назва), …] або [(посилання, назва, ID товару), …]."""
         self.entries = [(e[0], e[1], e[2] if len(e) > 2 else "") for e in entries]
-        n = len(self.entries)
-        with_ids = sum(1 for e in self.entries if e[2])
-        if with_ids:
-            title = title or ("з ID товарів" if with_ids == n else f"з них {with_ids} з ID товарів")
-        self.lbl_title.configure(text=f"Пакет: {n} відео" + (f" — {title}" if title else ""))
-        names = [f"{pid} — {name}" if pid else name for _, name, pid in self.entries[:PREVIEW]]
-        more = f"\n… і ще {n - PREVIEW}" if n > PREVIEW else ""
-        self.lbl_preview.configure(text="\n".join(f"•  {t}" for t in names) + more)
-
-        counts = [f"Усі ({n})"] + [f"Перші {k}" for k in LIMITS if k < n]
-        self.opt_count.configure(values=counts)
-        self.opt_count.set(counts[0])
+        if not title and any(e[2] for e in self.entries):
+            title = "з ID товарів"
+        self.title_suffix = title
+        self.opt_count.set("")
+        self._refresh_counts()
 
         # Початкові значення — з налаштувань, щоразу заново.
         self.opt_quality.set(_label_for(QUALITY_OPTIONS, settings.get("max_height"), default=3))
@@ -111,16 +256,29 @@ class BatchCard(uikit.Card):
         self.opt_subs.set(SUBS_OPTIONS[1][0])
         self.keep_original_var.set(bool(settings.get("keep_original")))
         self._audio_only = None
-        self._sync()
+        self.apply_style()
+        self._render()
+
+    def _refresh_counts(self):
+        """«Скільки взяти» під поточну кількість; обране «Перші N» лишається, якщо ще можливе."""
+        n = len(self.entries)
+        current = self.opt_count.get()
+        counts = [f"Усі ({n})"] + [f"Перші {k}" for k in LIMITS if k < n]
+        self.opt_count.configure(values=counts)
+        self.opt_count.set(current if current in counts[1:] else counts[0])
 
     def _is_audio_only(self):
         return self.opt_quality.get() == AUDIO_ONLY_LABEL
 
-    def _count(self):
+    def _limit(self):
         value = self.opt_count.get()
         if value.startswith("Перші "):
             return min(int(value.split()[1]), len(self.entries))
-        return len(self.entries)
+        return None
+
+    def _count(self):
+        limit = self._limit()
+        return len(self.entries) if limit is None else limit
 
     def _sync(self):
         audio_only = self._is_audio_only()
