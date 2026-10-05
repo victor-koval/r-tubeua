@@ -1,13 +1,15 @@
-"""Пари «ID товару — посилання на відео» з файлу: xlsx / xlsm, csv, txt.
+"""Пари «ID товару — посилання на відео» з файлу: xlsx / xlsm, xls, csv, txt.
 
 Колонки шукаємо самі, а не за жорсткою схемою: у кожному рядку — посилання на
 YouTube (зокрема гіперпосилання під текстом «відео») і ID товару (число з
 5–12 цифр). Розбирає рядок та сама tools.extract_id_pairs, що й вставлений
 список, тож правила однакові.
 
-Якщо в шапці є стовпець з «ID»/«ІД» у назві, ID беремо саме з нього: у
-таблиці може бути ще якесь число (код продавця, штрихкод), і «перше число
-в рядку» тоді вгадало б не те.
+Якщо шапка підказує колонку з ID, беремо його саме звідти. Справжній шаблон
+Rozetka «Добавление видеообзора» має і «Код товару на ROZETKA» (610963253 —
+саме він іде в ім'я файлу на FTP), і «ID товару у вашому прайс-листі»
+(141903775 — внутрішній номер продавця, теж 9 цифр). Тому колонки з
+«прайс», «ваш», «продавц», «артикул» не беремо, а «код … rozetka» — найперше.
 """
 
 import csv
@@ -18,8 +20,19 @@ from dataclasses import dataclass, field
 
 from . import tools
 
-SUPPORTED = (".xlsx", ".xlsm", ".csv", ".txt")
-_HEADER_ID = re.compile(r"(^|[^a-zа-яіїєґ])(id|ід|ид)([^a-zа-яіїєґ]|$)", re.I)
+SUPPORTED = (".xlsx", ".xlsm", ".xls", ".csv", ".txt")
+_ID_WORD = r"(код|id|ід|ид)"
+_HEADER_PRIORITY = [
+    # «Код товару на ROZETKA», «Rozetka ID»
+    re.compile(rf"{_ID_WORD}.*(rozetka|розетк)|(rozetka|розетк).*{_ID_WORD}", re.I),
+    # «Код», «ID товару», «Код товару»
+    re.compile(rf"^\W*{_ID_WORD}(\W+товару)?\W*$", re.I),
+    # будь-яка інша назва зі словом «ID»/«код»
+    re.compile(rf"(^|[^a-zа-яіїєґ]){_ID_WORD}([^a-zа-яіїєґ]|$)", re.I),
+]
+# Чужі номери (продавця, з прайс-листа, артикули) і стовпці з посиланнями.
+_HEADER_NOT_ID = re.compile(r"прайс|ваш|продавц|постачальн|артикул|посилан|url|link|штрих",
+                            re.I)
 _ID_CELL = re.compile(r"^\s*(\d{5,12})\s*$")
 
 
@@ -41,13 +54,16 @@ def _cell_text(value):
         return ""
     if isinstance(value, float) and value.is_integer():
         return str(int(value))
-    return str(value).strip()
+    # У реальних вивантаженнях трапляється «610963244\xa0» — нерозривний пробіл.
+    return str(value).replace("\xa0", " ").strip()
 
 
 def _find_id_column(header):
-    for i, text in enumerate(header):
-        if text and not tools.extract_video_urls(text) and _HEADER_ID.search(text):
-            return i
+    for pattern in _HEADER_PRIORITY:
+        for i, text in enumerate(header):
+            if (text and pattern.search(text) and not _HEADER_NOT_ID.search(text)
+                    and not tools.extract_video_urls(text)):
+                return i
     return None
 
 
@@ -101,6 +117,31 @@ def _xlsx_rows(path):
         wb.close()
 
 
+def _xls_rows(path):
+    """Старий Excel 97–2003 (.xls) — у такому, наприклад, приходить шаблон
+    Rozetka «Добавление видеообзора» (збережений у WPS Spreadsheets)."""
+    import xlrd
+    try:
+        book = xlrd.open_workbook(path)
+    except xlrd.XLRDError as exc:
+        # Деякі системи віддають під іменем .xls HTML-таблицю або xlsx.
+        raise ValueError(f"Файл не схожий на справжній .xls ({exc}). Відкрийте його в "
+                         "Excel і збережіть як .xlsx") from exc
+    for sheet in book.sheets():
+        links = {(h.frowx, h.fcolx): h.url_or_path for h in sheet.hyperlink_list}
+        rows = []
+        for r in range(sheet.nrows):
+            cells = []
+            for c in range(sheet.ncols):
+                text = _cell_text(sheet.cell_value(r, c))
+                link = (links.get((r, c)) or "").strip()
+                if link and link not in text:
+                    text = f"{text} {link}".strip()
+                cells.append(text)
+            rows.append(cells)
+        yield sheet.name, rows
+
+
 def _text_rows(path):
     with open(path, "rb") as f:
         raw = f.read()
@@ -128,7 +169,12 @@ def read_pairs(path):
     if ext not in SUPPORTED:
         raise ValueError(f"Непідтримуваний файл {ext or '(без розширення)'} — "
                          "потрібен .xlsx, .csv або .txt")
-    sources = _xlsx_rows(path) if ext in (".xlsx", ".xlsm") else _text_rows(path)
+    if ext in (".xlsx", ".xlsm"):
+        sources = _xlsx_rows(path)
+    elif ext == ".xls":
+        sources = _xls_rows(path)
+    else:
+        sources = _text_rows(path)
     for name, rows in sources:
         result = pairs_from_rows(rows)
         if result.pairs:

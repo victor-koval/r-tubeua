@@ -530,8 +530,8 @@ class RTubeApp(ctk.CTk):
         """Таблиця «ID товару — посилання» (xlsx, csv, txt) → картка пакета."""
         path = filedialog.askopenfilename(
             parent=self, title="Файл зі списком відео",
-            filetypes=[("Таблиці й списки", "*.xlsx *.xlsm *.csv *.txt"),
-                       ("Excel", "*.xlsx *.xlsm"), ("CSV", "*.csv"), ("Усі файли", "*.*")])
+            filetypes=[("Таблиці й списки", "*.xlsx *.xlsm *.xls *.csv *.txt"),
+                       ("Excel", "*.xlsx *.xlsm *.xls"), ("CSV", "*.csv"), ("Усі файли", "*.*")])
         if not path:
             return
         name = os.path.basename(path)

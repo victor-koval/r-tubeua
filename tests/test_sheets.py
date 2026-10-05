@@ -72,6 +72,22 @@ class SheetsTest(unittest.TestCase):
             f.write("590312170 https://youtube.com/shorts/pn6mZ0Bcugo?si=abc ;\n")
         self.assertEqual(sheets.read_pairs(self.path("list.txt")).pairs, [("590312170", A)])
 
+    def test_rozetka_template_takes_rozetka_code_not_price_id(self):
+        # Як у справжньому .xls «Добавление видеообзора»: і код Rozetka, і ID
+        # з прайс-листа продавця — обидва 9 цифр; плюс нерозривний пробіл у коді.
+        rows = [["Код товару на ROZETKA", "Посилання на товар на сайті ROZETKA",
+                 "ID товару у вашому прайс-листі", "Назва товару", "Посилання на відео"],
+                ["610963253", "https://rozetka.com.ua/610963253/p610963253", "141903775",
+                 "Замок-блокіратор", "https://www.youtube.com/shorts/pn6mZ0Bcugo"],
+                ["610963244", "https://rozetka.com.ua/ua/610963244/p610963244/", "141890721",
+                 "Блокіратор", "https://youtube.com/shorts/1G01ROKhAAw?si=K8Pie"]]
+        rows[2][0] = sheets._cell_text("610963244\xa0")
+        result = sheets.pairs_from_rows(rows)
+        self.assertEqual(result.pairs, [("610963253", A), ("610963244", B)])
+
+    def test_xls_supported_extension(self):
+        self.assertIn(".xls", sheets.SUPPORTED)
+
     def test_errors(self):
         with self.assertRaises(ValueError):
             sheets.read_pairs(self.path("x.docx"))

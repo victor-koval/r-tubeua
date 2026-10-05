@@ -82,6 +82,25 @@ def _is_video(f):
     return f.get("vcodec") not in (None, "none") and f.get("height")
 
 
+def quality_of(width, height):
+    """«1080p» — за коротшою стороною, як рахує сам YouTube.
+
+    За висотою вертикальний Shorts 1080×1920 виходив «1920p», а ліміт «1080p»
+    обирав 608×1080, який YouTube називає 480p, — тобто гірший за потрібний.
+    """
+    if width and height:
+        return int(min(width, height))
+    return int(height or 0)
+
+
+def _quality(f):
+    return quality_of(f.get("width"), f.get("height"))
+
+
+def _is_vertical(f):
+    return bool(f.get("width") and f.get("height") and f["height"] > f["width"])
+
+
 def is_audio_only(f):
     # HLS-доріжки YouTube не мають acodec, але підписані «audio only» —
     # і саме в них є мітка dubbed-auto, тож пропускати їх не можна.
@@ -147,7 +166,7 @@ def _video_groups(info):
         pool = [f for f in formats if _is_video(f)]
     groups = {}
     for f in pool:
-        key = (int(f["height"]), _fps_class(f), codec_family(f.get("vcodec")))
+        key = (_quality(f), _fps_class(f), codec_family(f.get("vcodec")))
         best = groups.get(key)
         rank = (-_proto_rank(f), f.get("tbr") or 0)
         if best is None or rank > (-_proto_rank(best), best.get("tbr") or 0):
@@ -202,6 +221,8 @@ def build_choices(info, max_height=1080, preferred_lang="uk"):
         name = f"{height}p" + ("60" if fps == 60 else "")
         size = _size(f, duration)
         parts = [name, codec]
+        if _is_vertical(f):
+            parts.insert(1, "вертикальне")
         if size:
             parts.append(("≈" if not f.get("filesize") else "") + format_size(size))
         choices.videos.append(VideoChoice((height, fps, codec), "  ·  ".join(parts),

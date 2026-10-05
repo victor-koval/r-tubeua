@@ -178,6 +178,59 @@ class IdTargetTest(unittest.TestCase):
         self.assertEqual(job.clone().product_id, "590312170")
 
 
+class SiblingCopyTest(unittest.TestCase):
+    """Один ролик для кількох товарів: качається раз, решті — копія."""
+
+    def setUp(self):
+        import tempfile
+        self.tmp = tempfile.TemporaryDirectory()
+        self.log = mock.patch.object(downloader, "applog", mock.MagicMock())
+        self.log.start()
+
+    def tearDown(self):
+        self.log.stop()
+        self.tmp.cleanup()
+
+    def job(self, pid):
+        return downloader.Job(url="https://www.youtube.com/watch?v=pn6mZ0Bcugo", title="t",
+                              out_dir=self.tmp.name, video_key=(720, 30, "H.264"), audio_lang="en",
+                              product_id=pid)
+
+    def test_copies_file_and_srt(self):
+        first = os.path.join(self.tmp.name, "610963253.mp4")
+        with open(first, "wb") as f:
+            f.write(b"video")
+        with open(os.path.join(self.tmp.name, "610963253.uk.srt"), "w") as f:
+            f.write("1")
+        second = self.job("610963232")
+        done = {downloader.same_video_key(self.job("610963253")): first}
+        runner = downloader._Runner(second, lambda *a: None, done)
+        target = os.path.join(self.tmp.name, "610963232.mp4")
+        with mock.patch.object(downloader, "pick_id_target", return_value=(target, "new")):
+            note = runner._copy_from_sibling()
+        self.assertIn("копія 610963253.mp4", note)
+        with open(target, "rb") as f:
+            self.assertEqual(f.read(), b"video")
+        self.assertTrue(os.path.isfile(os.path.join(self.tmp.name, "610963232.uk.srt")))
+
+    def test_other_quality_is_not_copied(self):
+        first = os.path.join(self.tmp.name, "610963253.mp4")
+        open(first, "wb").close()
+        done = {downloader.same_video_key(self.job("610963253")): first}
+        other = self.job("610963232")
+        other.video_key = (1080, 30, "H.264")
+        self.assertIsNone(downloader._Runner(other, lambda *a: None, done)._copy_from_sibling())
+
+    def test_same_target_is_already_have(self):
+        first = os.path.join(self.tmp.name, "610963253.mp4")
+        open(first, "wb").close()
+        done = {downloader.same_video_key(self.job("610963253")): first}
+        runner = downloader._Runner(self.job("610963253"), lambda *a: None, done)
+        with mock.patch.object(downloader, "pick_id_target", return_value=(first, "skip")):
+            with self.assertRaises(downloader.AlreadyHave):
+                runner._copy_from_sibling()
+
+
 class DiskTest(unittest.TestCase):
     def test_needed_bytes(self):
         self.assertEqual(downloader.needed_bytes([1000, 0]), 2100)

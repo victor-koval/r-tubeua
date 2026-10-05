@@ -14,6 +14,7 @@ import re
 import shutil
 import subprocess
 import threading
+import time
 from dataclasses import dataclass, field
 
 import yt_dlp
@@ -203,18 +204,22 @@ def final_ext(info, fmt, job):
     return f.get("ext") or job.container
 
 
-def probe_height(path):
-    """Висота відео у файлі через ffprobe; None — якщо дізнатися не вдалося."""
+def probe_quality(path):
+    """Якість відео у файлі («1080» для 1920×1080 і для вертикального
+    1080×1920) — та сама міра, що й video_key[0]. None — не вдалося дізнатися."""
     ffprobe = tools.find_ffprobe()
     if not ffprobe:
         return None
     try:
         out = subprocess.run(
             [ffprobe, "-v", "error", "-select_streams", "v:0", "-show_entries",
-             "stream=height", "-of", "csv=p=0", path],
+             "stream=width,height", "-of", "csv=p=0", path],
             capture_output=True, text=True, timeout=20,
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0)).stdout.strip()
-        return int(out.splitlines()[0]) if out else None
+        if not out:
+            return None
+        width, height = (int(x) for x in out.splitlines()[0].split(",")[:2])
+        return formats.quality_of(width, height)
     except Exception:
         return None
 
@@ -239,7 +244,7 @@ MAX_ID_SUFFIX = 99
 
 
 def pick_id_target(out_dir, product_id, ext, url, height,
-                   comment_of=probe_comment, height_of=probe_height):
+                   comment_of=probe_comment, height_of=probe_quality):
     """Куди качати ролик для товару: (шлях, дія).
 
     дія «new» — файлу немає; «skip» — цей самий ролик тієї ж якості вже є;
@@ -258,6 +263,18 @@ def pick_id_target(out_dir, product_id, ext, url, height,
                 return path, "skip"
             return path, "overwrite"
     raise DownloadError(f"Для товару {product_id} уже {MAX_ID_SUFFIX} різних відео в теці")
+
+
+# Скільки тримати info ролика для повторного використання: посилання на
+# формати YouTube живуть кілька годин, година — із запасом.
+INFO_TTL = 3600
+
+
+def same_video_key(job):
+    """Однакові ключі — однаковий файл: той самий ролик, якість, доріжки,
+    контейнер і субтитри. Тоді другий товар отримує копію, а не нове завантаження."""
+    return (job.url, tuple(job.video_key or ()), job.audio_lang, job.container,
+            bool(job.keep_original), tuple(job.sub_key or ()), job.subs_mode)
 
 
 def needs_ffmpeg(job, progressive=False):
@@ -377,6 +394,10 @@ class DownloadManager:
         self._jobs = queue.Queue()
         self._running = None
         self._worker_ident = None
+        # Що вже скачано в цьому сеансі: same_video_key → шлях. У шаблоні
+        # Rozetka одне відео буває в 9 товарів — качаємо раз, решті копіюємо.
+        self._done_files = {}
+        self._info_cache = {}       # посилання → (час, info); див. INFO_TTL
         self._thread = threading.Thread(target=self._worker, daemon=True)
         self._thread.start()
 
@@ -416,8 +437,10 @@ class DownloadManager:
             self._running = job
             self._emit("state", job, "running", "Підготовка…")
             try:
-                note = _Runner(job, self._emit).run()
+                note = _Runner(job, self._emit, self._done_files, self._info_cache).run()
                 job.state = "done"
+                if job.filepath and os.path.isfile(job.filepath):
+                    self._done_files[same_video_key(job)] = job.filepath
                 self._emit("state", job, "done", note or "Готово")
             except Cancelled:
                 job.state = "cancelled"
@@ -433,9 +456,11 @@ class DownloadManager:
 class _Runner:
     """Одне завантаження: параметри, прогрес, повтор у разі збою."""
 
-    def __init__(self, job, emit):
+    def __init__(self, job, emit, done_files=None, info_cache=None):
         self.job = job
         self.emit = emit
+        self.done_files = done_files if done_files is not None else {}
+        self.info_cache = info_cache if info_cache is not None else {}
         self.part_sizes = {}      # format_id → розмір у байтах
         self.done_bytes = {}      # format_id → скільки вже скачано
         self.temp_files = set()
@@ -621,8 +646,13 @@ class _Runner:
         """Аналіз і вибір для завдань із пакета чи відновленої черги."""
         job = self.job
         if job.info is None:
-            self.emit("progress", job, None, "Аналіз…")
-            job.info = analyze(job.url)
+            cached = self.info_cache.get(job.url)
+            if cached and time.monotonic() - cached[0] < INFO_TTL:
+                job.info = cached[1]        # той самий ролик для іншого товару
+            else:
+                self.emit("progress", job, None, "Аналіз…")
+                job.info = analyze(job.url)
+                self.info_cache[job.url] = (time.monotonic(), job.info)
             job.title = job.info.get("title") or job.title
         if job.video_key is None or job.audio_lang is None or job.sub_key is None:
             apply_prefs(job, job.info)
@@ -630,11 +660,40 @@ class _Runner:
         if job.cancel_event.is_set():
             raise Cancelled()
 
+    def _copy_from_sibling(self):
+        """Той самий ролик із тими самими параметрами вже скачано для іншого
+        товару — копіюємо файл під цим ID замість повторного завантаження.
+        None — копіювати нема з чого."""
+        job = self.job
+        source = self.done_files.get(same_video_key(job))
+        if not source or not os.path.isfile(source):
+            return None
+        ext = os.path.splitext(source)[1].lstrip(".")
+        height = None if job.audio_only else job.video_key[0]
+        target, action = pick_id_target(job.out_dir, job.product_id, ext, job.url, height)
+        same_file = os.path.normcase(os.path.abspath(target)) == \
+            os.path.normcase(os.path.abspath(source))
+        if action == "skip" or same_file:
+            raise AlreadyHave(target)
+        self.emit("progress", job, None, f"Копіюю {os.path.basename(source)}…")
+        shutil.copy2(source, target)
+        # Субтитри окремим файлом — теж під новим ім'ям.
+        src_stem, dst_stem = os.path.splitext(source)[0], os.path.splitext(target)[0]
+        for srt in glob.glob(glob.escape(src_stem) + ".*.srt"):
+            shutil.copy2(srt, dst_stem + srt[len(src_stem):])
+        job.filepath = target
+        applog.info(f"{target}: копія {source} (той самий ролик)")
+        return f"Готово — копія {os.path.basename(source)} (те саме відео)"
+
     def _run(self):
         job = self.job
         os.makedirs(job.out_dir, exist_ok=True)
         note = ""
         self._prepare()
+        if job.product_id:
+            copied = self._copy_from_sibling()
+            if copied:
+                return copied
         try:
             info = self._download(job.info, with_subs=True)
         except DownloadError as exc:
@@ -728,7 +787,7 @@ class _Runner:
         """Чи наявний файл тієї якості, яку просять зараз."""
         if self.job.audio_only:
             return True     # ім'я й розширення ті самі — це той самий звук
-        return probe_height(path) == self.job.video_key[0]
+        return probe_quality(path) == self.job.video_key[0]
 
     def _check_disk_space(self):
         need = needed_bytes(self.part_sizes.values())

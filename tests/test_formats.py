@@ -63,6 +63,20 @@ class ChoicesTest(unittest.TestCase):
         info["formats"].append(drc)
         self.assertEqual(formats.pick_audio_format(info, "uk", "m4a")["format_id"], "140-19")
 
+    def test_vertical_short_quality_by_short_side(self):
+        # Shorts 1080×1920: «1080p», а не «1920p»; ліміт 1080 не має скочуватись
+        # на 608×1080 (YouTube зве його 480p).
+        def fmt(fid, w, h, tbr):
+            return {"format_id": fid, "vcodec": "avc1.64002a", "acodec": "none", "ext": "mp4",
+                    "width": w, "height": h, "tbr": tbr, "protocol": "https"}
+        info = {"formats": [fmt("a", 1080, 1920, 2000), fmt("b", 608, 1080, 600),
+                            fmt("c", 720, 1280, 1000)]}
+        c = formats.build_choices(info, 1080)
+        self.assertEqual(c.videos[c.default_video].key[0], 1080)
+        self.assertIn("вертикальне", c.videos[c.default_video].label)
+        self.assertEqual(formats.resolve_format(info, (1080, 30, "H.264"), ""), "a")
+        self.assertEqual(formats.quality_of(1920, 1080), formats.quality_of(1080, 1920))
+
     def test_default_quality_1080_h264(self):
         self.assertEqual(self.choices.videos[self.choices.default_video].key, (1080, 30, "H.264"))
 
