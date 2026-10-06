@@ -97,6 +97,21 @@ class WriteReportTest(unittest.TestCase):
         ws = load_workbook(report.write_report(os.path.join(self.tmp.name, "z.xlsx"), items)).active
         self.assertEqual(ws.cell(ws.max_row, 8).value, "1,40")
 
+    def test_total_is_sum_of_shown_rows(self):
+        # Як у реальному звіті: рядки показують заокруглене (11,66 → «0,12»),
+        # і «Разом» має бути сумою саме цих чисел — 1,40, а не 1,39.
+        durations = [11.66, 13.6, 13.4, 11.9, 11.5, 14.7, 11.7, 11.0]
+        items = [{"product_id": str(n), "url": f"u{n}", "title": "t",
+                  "filepath": os.path.join(self.tmp.name, f"{n}.mp4"), "state": "done",
+                  "text": "Готово", "duration": d} for n, d in enumerate(durations)]
+        ws = load_workbook(report.write_report(os.path.join(self.tmp.name, "r.xlsx"), items)).active
+        shown = sum(int(m) * 60 + int(s) for m, s in
+                    (ws.cell(r, 8).value.split(",") for r in range(2, len(items) + 2)))
+        total = ws.cell(ws.max_row, 8).value
+        self.assertEqual(total, f"{shown // 60},{shown % 60:02d}")
+        # Точна сума — 99,46 с («1,39»); показані рядки дають більше.
+        self.assertNotEqual(total, "1,39")
+
     def test_default_name_is_latin(self):
         name = report.default_name(0)
         self.assertRegex(name, r"^zvit_\d{4}-\d\d-\d\d_\d{4}\.xlsx$")

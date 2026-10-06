@@ -159,10 +159,17 @@ def format_duration(seconds):
     return f"{hours}:{minutes:02d}:{secs:02d}" if hours else f"{minutes}:{secs:02d}"
 
 
+def whole_seconds(seconds):
+    """Тривалість у цілих секундах — так, як її видно в «3,27». Суми складаємо
+    з цих цілих, а не з точних значень: інакше «Разом» (1,39) не збігалося б
+    із сумою того, що видно в рядках (1,40)."""
+    return int(round(max(0, seconds or 0)))
+
+
 def format_min_sec(seconds):
     """207 → «3,27»: хвилини, кома, секунди двома цифрами. Годин не виділяємо
     (75 хв — «75,03»): такий формат просили для звітів."""
-    seconds = int(round(max(0, seconds or 0)))
+    seconds = whole_seconds(seconds)
     minutes, secs = divmod(seconds, 60)
     return f"{minutes},{secs:02d}"
 

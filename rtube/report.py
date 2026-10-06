@@ -16,7 +16,7 @@ from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill
 from openpyxl.utils import get_column_letter
 
-from .uikit import format_min_sec
+from .uikit import format_min_sec, whole_seconds
 
 HEADERS = ("№", "ID товару", "Посилання", "Назва", "Файл", "Статус", "Деталі",
            "Тривалість", "Розмір, МБ")
@@ -102,7 +102,7 @@ def write_report(path, items):
         key = _key(item) or id(item)
         if duration and item.get("state") == "done" and key not in counted:
             counted.add(key)
-            total += duration
+            total += whole_seconds(duration)
         ws.append([
             n,
             item.get("product_id") or "",

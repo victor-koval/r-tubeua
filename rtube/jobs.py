@@ -48,7 +48,7 @@ def unique_seconds(jobs):
         if key in seen:
             continue
         seen.add(key)
-        total += job_duration(job) or 0
+        total += uikit.whole_seconds(job_duration(job))
     return total
 
 
