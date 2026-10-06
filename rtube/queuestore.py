@@ -16,7 +16,7 @@ from .settings import CONFIG_DIR
 QUEUE_PATH = os.path.join(CONFIG_DIR, "queue.json")
 
 _FIELDS = ("url", "title", "out_dir", "container", "keep_original", "subs_mode",
-           "video_key", "audio_lang", "audio_label", "sub_key", "prefs", "product_id")
+           "video_key", "audio_lang", "audio_label", "sub_key", "prefs", "product_id", "same_as")
 
 
 def job_to_dict(job):
@@ -83,10 +83,10 @@ def clear(path=None):
 
 
 # ── що вже скачано: same_video_key → файл ───────────────────────────────
-# Щоб після перезапуску другий товар з тим самим роликом отримав копію, а не
-# нове завантаження (downloader._Runner._copy_from_sibling). Разом зі шляхом
-# пишемо розмір і час зміни: якщо файл відтоді замінили чи переписали,
-# запис не довіряємо — інакше товар отримав би копію чужого відео.
+# Щоб після перезапуску другий товар з тим самим роликом послався на вже
+# скачаний файл, а не качав удруге (downloader._Runner._use_sibling). Разом
+# зі шляхом пишемо розмір і час зміни: якщо файл відтоді замінили чи
+# переписали, запис не довіряємо — інакше товар послався б на чуже відео.
 DONE_PATH = os.path.join(CONFIG_DIR, "done.json")
 DONE_LIMIT = 2000
 

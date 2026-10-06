@@ -37,6 +37,13 @@ def display_title(job):
     return tools.short_url(title) if title.startswith("http") else title
 
 
+def queued_text(job):
+    """«У черзі» — і, для товару з тим самим роликом, що в іншого, з ким саме."""
+    if job.same_as:
+        return f"У черзі · те саме відео, що й у {job.same_as} — качається один раз"
+    return "У черзі"
+
+
 def row_order(job):
     """Порядок у списку: що качається — угорі, далі черга в порядку
     завантаження, внизу завершені (свіжі вище). Раніше нові були просто
@@ -76,7 +83,7 @@ class JobRow(ctk.CTkFrame):
         self.bar.set(0)
         self.bar.grid(row=2, column=0, sticky="ew", padx=(12, 8), pady=(6, 2))
         self.bar.grid_remove()
-        self.lbl_status = ctk.CTkLabel(self, text="У черзі", font=FONT_SMALL, anchor="w",
+        self.lbl_status = ctk.CTkLabel(self, text=queued_text(job), font=FONT_SMALL, anchor="w",
                                        text_color=uikit.TEXT_MUTED)
         self.lbl_status.grid(row=3, column=0, sticky="ew", padx=(12, 8), pady=(0, 8))
 
@@ -95,6 +102,13 @@ class JobRow(ctk.CTkFrame):
         uikit.wrap_to_width(self.lbl_title)
         if job.state != "queued":
             self.set_state(job.state, job.status)     # рядок створено, коли завдання вже йшло
+
+    def set_group(self, group):
+        """Тло рядка — колір групи «те саме відео», або звичайне."""
+        color = uikit.SURFACE_RAISED if group is None else \
+            uikit.GROUP_COLORS[group % len(uikit.GROUP_COLORS)]
+        if self.cget("fg_color") != color:
+            self.configure(fg_color=color)
 
     def set_meta(self, title, summary):
         """Після відкладеного аналізу: справжня назва й обрана якість/доріжка."""
@@ -126,6 +140,8 @@ class JobRow(ctk.CTkFrame):
         self.lbl_status.configure(text=text, text_color=uikit.TEXT_MUTED)
 
     def set_state(self, state, text):
+        if state == "queued" and text == "У черзі":
+            text = queued_text(self.job)
         if state != "queued" or self.fraction:
             self.bar.grid()
         colors = {"done": uikit.STATE_OK, "error": uikit.STATE_ERROR,
@@ -142,7 +158,10 @@ class JobRow(ctk.CTkFrame):
             # завантаження виглядало як дуже швидке (так і сталося в колеги).
             if "без субтитрів" in text or text == downloader.ALREADY_NOTE:
                 self.lbl_status.configure(text_color=uikit.STATE_WARN)
-            if self.job.filepath:
+            if text.startswith(downloader.SAME_VIDEO):
+                # Окремого файлу немає — ім'я спільного вже в самому тексті.
+                self.lbl_status.configure(text_color=uikit.STATE_INFO)
+            elif self.job.filepath:
                 self.lbl_status.configure(text=f"{text}  ·  {os.path.basename(self.job.filepath)}")
             self.btn_open.pack(side="left", padx=(0, 6))
             self.btn_folder.pack(side="left")
@@ -354,8 +373,26 @@ class JobsPanel(uikit.Card):
             self.rows[job_id] = JobRow(self.jobs_list, self, self.jobs[job_id])
         self._regrid_rows()
 
+    def _groups(self):
+        """job.id → номер групи для товарів з тим самим роликом у тій самій теці
+        (один файл на всіх). Номери — за першою появою, щоб кольори не стрибали."""
+        members = {}
+        for job in sorted(self.jobs.values(), key=lambda j: j.id):
+            if job.product_id:
+                members.setdefault((job.url, os.path.normcase(job.out_dir)), []).append(job.id)
+        groups, index = {}, 0
+        for ids in members.values():
+            if len({self.jobs[i].product_id for i in ids}) > 1:
+                for i in ids:
+                    groups[i] = index
+                index += 1
+        return groups
+
     def _regrid_rows(self):
         order = sorted(self.rows.values(), key=lambda r: row_order(r.job))
+        groups = self._groups()
+        for row in order:
+            row.set_group(groups.get(row.job.id))
         hidden = [j for j in self.jobs.values() if j.id not in self.rows]
         waiting = sum(1 for j in hidden if j.state in ACTIVE)
         parts = []

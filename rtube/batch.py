@@ -23,17 +23,30 @@ LIMITS = (10, 25, 50, 100)
 TABLE_ROWS = 8          # найбільше; на низькому вікні менше (fit)
 REMOVE = "✕"
 COLUMNS = ("n", "pid", "video", "note", "x")
+GROUP_COLORS = uikit.GROUP_COLORS
+
+
+def plural(n, one, few, many):
+    """1 товар, 2 товари, 5 товарів."""
+    if n % 10 == 1 and n % 100 != 11:
+        return one
+    if 2 <= n % 10 <= 4 and not 12 <= n % 100 <= 14:
+        return few
+    return many
 
 
 def describe(entries, busy=(), limit=None):
-    """Рядки таблиці: [{n, pid, video, note, kind}, …].
+    """Рядки таблиці: [{n, pid, video, note, kind, group}, …].
 
     entries — [(посилання, назва, ID товару), …]; busy — {(посилання, ID)}, що вже
     чекають чи качаються; limit — скільки беремо («Перші N»), None — усі.
-    kind: "" — звичайний; "copy" — той самий ролик для іншого товару (буде копія);
-    "skip" — пропуститься (повтор рядка або вже в черзі); "over" — поза «Перші N».
+    kind: "" — звичайний; "shared" — перший товар, чиє відео стоїть і в інших
+    (файл назветься за його ID); "same" — той самий ролик, що в першого
+    (окремого файлу не буде); "skip" — пропуститься (повтор рядка або вже в
+    черзі); "over" — поза «Перші N». group — номер групи «те саме відео»
+    (для кольору рядків) або None.
     """
-    rows, first_of_url, seen = [], {}, {}
+    rows, seen, members = [], {}, {}
     for i, (url, title, pid) in enumerate(entries):
         n = i + 1
         key = (url, pid or "")
@@ -45,11 +58,29 @@ def describe(entries, busy=(), limit=None):
             note, kind = "уже в черзі — пропуститься", "skip"
         elif key in seen:
             note, kind = f"повтор рядка {seen[key]} — пропуститься", "skip"
-        elif url in first_of_url:
-            note, kind = f"той самий ролик, що в рядку {first_of_url[url]} — буде копія", "copy"
+        else:
+            members.setdefault(url, []).append(i)
         seen.setdefault(key, n)
-        first_of_url.setdefault(url, n)
-        rows.append({"n": n, "pid": pid or "", "video": video, "note": note, "kind": kind})
+        rows.append({"n": n, "pid": pid or "", "video": video, "note": note, "kind": kind,
+                     "group": None})
+
+    # Групи — лише серед тих, що справді качатимуться: один ролик — один
+    # файл, названий за першим ID; решта товарів на нього посилається.
+    group = 0
+    for indexes in members.values():
+        if len(indexes) < 2:
+            continue
+        first = rows[indexes[0]]
+        owner = first["pid"] or f"рядку {first['n']}"
+        others = [rows[i]["pid"] or f"рядок {rows[i]['n']}" for i in indexes[1:]]
+        first["kind"] = "shared"
+        first["note"] = f"▸ спільне ще для {len(others)}: {', '.join(others)}"
+        for i in indexes[1:]:
+            rows[i]["kind"] = "same"
+            rows[i]["note"] = f"↳ те саме відео, що й у {owner}"
+        for i in indexes:
+            rows[i]["group"] = group
+        group += 1
     return rows
 
 
@@ -174,7 +205,9 @@ class BatchCard(uikit.Card):
         style.map("Batch.Treeview.Heading", background=[("active", uikit.SURFACE[i])])
         style.map("Batch.Treeview", background=[("selected", uikit.NEUTRAL_HOVER[i])],
                   foreground=[("selected", fg)])
-        self.tree.tag_configure("copy", foreground=uikit.STATE_INFO[i])
+        for g, colors in enumerate(GROUP_COLORS):
+            self.tree.tag_configure(f"group{g}", background=colors[i])
+        self.tree.tag_configure("same", foreground=uikit.STATE_INFO[i])
         self.tree.tag_configure("skip", foreground=uikit.STATE_WARN[i])
         self.tree.tag_configure("over", foreground=uikit.TEXT_MUTED[i])
 
@@ -184,7 +217,9 @@ class BatchCard(uikit.Card):
         rows = describe(self.entries, busy, self._limit())
         self.tree.delete(*self.tree.get_children())
         for row in rows:
-            self.tree.insert("", "end", iid=str(row["n"] - 1), tags=(row["kind"],),
+            tags = (row["kind"],) if row["group"] is None else \
+                (row["kind"], f"group{row['group'] % len(GROUP_COLORS)}")
+            self.tree.insert("", "end", iid=str(row["n"] - 1), tags=tags,
                              values=(row["n"], row["pid"], row["video"], row["note"], REMOVE))
         has_ids = any(r["pid"] for r in rows)
         self.tree.configure(displaycolumns=COLUMNS if has_ids else ("n", "video", "note", "x"))
@@ -193,14 +228,17 @@ class BatchCard(uikit.Card):
         n = len(self.entries)
         self.lbl_title.configure(text=f"Пакет: {n} відео" +
                                  (f" — {self.title_suffix}" if self.title_suffix else ""))
-        copies = sum(1 for r in rows if r["kind"] == "copy")
+        groups = len({r["group"] for r in rows if r["group"] is not None})
+        grouped = sum(1 for r in rows if r["group"] is not None)
         skipped = sum(1 for r in rows if r["kind"] == "skip")
         with_ids = sum(1 for r in rows if r["pid"])
         parts = []
         if with_ids and with_ids < n:
             parts.append(f"з ID — {with_ids}, решта назвуться латиницею")
-        if copies:
-            parts.append(f"копій того самого ролика: {copies} (качається раз)")
+        if groups:
+            parts.append(f"однакові відео: {groups} {plural(groups, 'група', 'групи', 'груп')} "
+                         f"({grouped} {plural(grouped, 'товар', 'товари', 'товарів')}) — "
+                         "кожне качається раз, файл — за першим ID")
         if skipped:
             parts.append(f"пропуститься: {skipped}")
         parts.append("✕ або Delete — прибрати рядок")
@@ -298,9 +336,12 @@ class BatchCard(uikit.Card):
             "audio": _value_for(AUDIO_OPTIONS, self.opt_audio.get()),
             "subs": "none" if audio_only else _value_for(SUBS_OPTIONS, self.opt_subs.get()),
         }
-        return [downloader.Job(url=url, title=title, out_dir=out_dir,
-                               container=self.container.get(),
-                               keep_original=bool(self.keep_original_var.get()) and not audio_only,
-                               sub_key=None, subs_mode=settings.get("subs_mode"),
-                               product_id=product_id or "", prefs=dict(prefs))
-                for url, title, product_id in self.entries[:self._count()]]
+        jobs, first_pid = [], {}
+        for url, title, product_id in self.entries[:self._count()]:
+            owner = first_pid.setdefault(url, product_id or "")
+            jobs.append(downloader.Job(
+                url=url, title=title, out_dir=out_dir, container=self.container.get(),
+                keep_original=bool(self.keep_original_var.get()) and not audio_only,
+                sub_key=None, subs_mode=settings.get("subs_mode"), product_id=product_id or "",
+                same_as=owner if owner and owner != product_id else "", prefs=dict(prefs)))
+        return jobs

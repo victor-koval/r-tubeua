@@ -58,6 +58,32 @@ class WriteReportTest(unittest.TestCase):
         # Разом — лише завантажені.
         self.assertEqual(ws.cell(ws.max_row, 8).value, "3,27")
 
+    def test_shared_video_group(self):
+        video = os.path.join(self.tmp.name, "590312170.mp4")
+        with open(video, "wb") as f:
+            f.write(b"\0" * 1024 * 1024)
+        same = "Те саме відео, що й у 590312170 — файл 590312170.mp4"
+        items = [
+            {"product_id": "590312170", "url": "u", "title": "t", "filepath": video,
+             "state": "done", "text": "Готово", "duration": 60},
+            {"product_id": "610963253", "url": "u", "title": "t", "filepath": video,
+             "state": "done", "text": same, "duration": 60},
+            {"product_id": "580250272", "url": "v", "title": "t", "filepath": "",
+             "state": "error", "text": "Приватне відео", "duration": None},
+        ]
+        path = report.write_report(os.path.join(self.tmp.name, "zvit.xlsx"), items)
+        ws = load_workbook(path).active
+        owner, other, failed = ([c.value for c in ws[r]] for r in (2, 3, 4))
+        self.assertIn("спільне відео ще для: 610963253", owner[6])
+        self.assertEqual(other[4], "590312170.mp4")
+        self.assertEqual(other[5], "Те саме відео")
+        self.assertEqual(other[6], same)
+        self.assertEqual(owner[8], 1.0)
+        self.assertIsNone(other[8])         # окремого файлу немає — і розміру теж
+        fill = lambda r: ws.cell(r, 1).fill.fgColor.rgb
+        self.assertEqual(fill(2), fill(3))
+        self.assertNotEqual(fill(2), fill(4))
+
     def test_default_name_is_latin(self):
         name = report.default_name(0)
         self.assertRegex(name, r"^zvit_\d{4}-\d\d-\d\d_\d{4}\.xlsx$")

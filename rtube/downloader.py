@@ -189,6 +189,14 @@ def track_metadata_args(info, fmt, source_url=None):
 
 
 ALREADY_NOTE = "Уже є в теці — не качав вдруге"
+SAME_VIDEO = "Те саме відео, що й у"
+
+
+def same_video_note(path):
+    """«Те саме відео, що й у 590312170 — файл 590312170.mp4» для товару, що
+    ділить ролик з іншим: окремого файлу в нього немає."""
+    name = os.path.basename(path)
+    return f"{SAME_VIDEO} {os.path.splitext(name)[0]} — файл {name}"
 
 
 class AlreadyHave(Exception):
@@ -284,7 +292,7 @@ INFO_TTL = 3600
 
 def same_video_key(job):
     """Однакові ключі — однаковий файл: той самий ролик, якість, доріжки,
-    контейнер і субтитри. Тоді другий товар отримує копію, а не нове завантаження."""
+    контейнер і субтитри. Тоді другий товар посилається на файл першого, а не качає вдруге."""
     return (job.url, tuple(job.video_key or ()), job.audio_lang, job.container,
             bool(job.keep_original), tuple(job.sub_key or ()), job.subs_mode)
 
@@ -320,6 +328,7 @@ class Job:
     sub_key: tuple = ()             # () — без субтитрів, None — вирішити за prefs
     subs_mode: str = "embed"        # embed / file
     product_id: str = ""            # ID товару — тоді файл зветься «590312170.mp4»
+    same_as: str = ""               # ID першого товару з тим самим роликом (з пакета) — для підпису
     # max_height: 0 — найкраща, AUDIO_ONLY — лише звук; audio: "uk" / "orig";
     # subs: "none" / "author_uk"
     prefs: dict = field(default_factory=dict)
@@ -362,7 +371,7 @@ class Job:
                    audio_label=self.audio_label, container=self.container,
                    keep_original=self.keep_original, sub_key=self.sub_key,
                    subs_mode=self.subs_mode, product_id=self.product_id,
-                   prefs=dict(self.prefs))
+                   same_as=self.same_as, prefs=dict(self.prefs))
 
 
 def apply_prefs(job, info):
@@ -429,7 +438,7 @@ class DownloadManager:
         self._worker_ident = None
         self._last_network = 0.0    # коли закінчилось попереднє завантаження (monotonic)
         # Що вже скачано в цьому сеансі: same_video_key → шлях. У шаблоні
-        # Rozetka одне відео буває в 9 товарів — качаємо раз, решті копіюємо.
+        # Rozetka одне відео буває в 9 товарів — качаємо раз, решта посилається на файл.
         self._done_files = dict(done_files or {})
         self._on_done = on_done
         self._info_cache = {}       # посилання → (час, info); див. INFO_TTL
@@ -781,14 +790,25 @@ class _Runner:
         if job.cancel_event.is_set():
             raise Cancelled()
 
-    def _copy_from_sibling(self):
+    def _use_sibling(self):
         """Той самий ролик із тими самими параметрами вже скачано для іншого
-        товару — копіюємо файл під цим ID замість повторного завантаження.
-        None — копіювати нема з чого."""
+        товару. У тій самій теці окремого файлу не робимо: один ролик — один
+        файл, названий за першим ID, а цей товар на нього посилається. В іншу
+        теку — копія під цим ID: там цього відео ще немає. None — посилатись
+        нема на що, треба качати."""
         job = self.job
         source = self.done_files.get(same_video_key(job))
         if not source or not os.path.isfile(source):
             return None
+        same_dir = os.path.normcase(os.path.abspath(os.path.dirname(source))) == \
+            os.path.normcase(os.path.abspath(job.out_dir))
+        if same_dir:
+            owner = os.path.splitext(os.path.basename(source))[0].split("_")[0]
+            if owner == job.product_id:
+                raise AlreadyHave(source)       # той самий товар удруге
+            job.filepath = source
+            applog.info(f"ID {job.product_id}: те саме відео, що {source} — окремого файлу немає")
+            return same_video_note(source)
         ext = os.path.splitext(source)[1].lstrip(".")
         height = None if job.audio_only else job.video_key[0]
         target, action = pick_id_target(job.out_dir, job.product_id, ext, job.url, height)
@@ -812,9 +832,9 @@ class _Runner:
         note = ""
         self._prepare()
         if job.product_id:
-            copied = self._copy_from_sibling()
-            if copied:
-                return copied
+            shared = self._use_sibling()
+            if shared:
+                return shared
         try:
             info = self._download(job.info, with_subs=True)
         except DownloadError as exc:

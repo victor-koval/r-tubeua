@@ -24,10 +24,21 @@ class DescribeTest(unittest.TestCase):
         self.assertEqual([r["kind"] for r in rows], ["", ""])
         self.assertEqual(rows[0]["pid"], "590312170")
 
-    def test_same_video_other_product_is_copy(self):
-        rows = batch.describe([(A, A, "1"), (B, B, "2"), (A, A, "3")])
-        self.assertEqual(rows[2]["kind"], "copy")
-        self.assertIn("рядку 1", rows[2]["note"])
+    def test_same_video_is_one_group_named_by_first_id(self):
+        rows = batch.describe([(A, A, "1"), (B, B, "2"), (A, A, "3"), (A, A, "4")])
+        self.assertEqual([r["kind"] for r in rows], ["shared", "", "same", "same"])
+        self.assertEqual(rows[0]["note"], "▸ спільне ще для 2: 3, 4")
+        self.assertEqual(rows[2]["note"], "↳ те саме відео, що й у 1")
+        self.assertEqual([r["group"] for r in rows], [0, None, 0, 0])
+
+    def test_groups_get_their_own_numbers(self):
+        rows = batch.describe([(A, A, "1"), (B, B, "2"), (A, A, "3"), (B, B, "4")])
+        self.assertEqual([r["group"] for r in rows], [0, 1, 0, 1])
+
+    def test_skipped_rows_are_not_in_group(self):
+        rows = batch.describe([(A, A, "1"), (A, A, "1"), (A, A, "3")], limit=2)
+        self.assertEqual([r["kind"] for r in rows], ["", "skip", "over"])
+        self.assertEqual([r["group"] for r in rows], [None, None, None])
 
     def test_exact_repeat_is_skipped(self):
         rows = batch.describe([(A, A, "1"), (A, A, "1")])
@@ -43,6 +54,13 @@ class DescribeTest(unittest.TestCase):
         rows = batch.describe([(A, A, ""), (B, B, ""), (C, C, "")], limit=2)
         self.assertEqual([r["kind"] for r in rows], ["", "", "over"])
         self.assertIn("Перші 2", rows[2]["note"])
+
+
+class PluralTest(unittest.TestCase):
+    def test_forms(self):
+        forms = [batch.plural(n, "товар", "товари", "товарів") for n in (1, 2, 5, 11, 21, 22, 112)]
+        self.assertEqual(forms, ["товар", "товари", "товарів", "товарів", "товар", "товари",
+                                 "товарів"])
 
 
 class SkippedLinesTest(unittest.TestCase):
