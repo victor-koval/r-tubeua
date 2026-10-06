@@ -203,12 +203,12 @@ class SettingsDialog(ctk.CTkToplevel):
                     "й докачується при наступному запуску.")
 
     def _build_updates(self, body):
-        row = self._check(body, 0, "Автоматично оновлювати yt-dlp", "ytdlp_autoupdate",
-                          "Раз на 12 годин програма перевіряє свіжий yt-dlp — він лагодить "
-                          "завантаження, коли YouTube щось змінює.")
-        row = self._check(body, row, "Автоматично оновлювати R-TubeUA", "app_autoupdate",
-                          "Нова версія програми з GitHub завантажується й перевіряється у фоні; "
-                          "унизу вікна з'являється «Оновити й перезапустити».")
+        row = self._check(body, 0, "Перевіряти оновлення при запуску програми",
+                          "check_updates_on_start",
+                          "Нова версія R-TubeUA (з GitHub) і свіжий yt-dlp (він лагодить "
+                          "завантаження, коли YouTube щось змінює) завантажуються й "
+                          "перевіряються у фоні; унизу вікна з'являється «Оновити й "
+                          "перезапустити». Вручну — «Перевірити зараз».")
         line = ctk.CTkFrame(body, fg_color="transparent")
         line.grid(row=row, column=0, columnspan=2, sticky="w", pady=(6, 0))
         self.btn_check = uikit.SecondaryButton(line, text="Перевірити зараз", width=150,
@@ -257,13 +257,13 @@ class SettingsDialog(ctk.CTkToplevel):
         def work():
             from .app import APP_VERSION
             try:
-                result["installed"] = ytupdate.check_and_install(force=True)
+                result["installed"] = ytupdate.check_and_install()
             except Exception as exc:
                 applog.error("Ручна перевірка yt-dlp не вдалася", exc)
                 result["error"] = str(exc)
             if appupdate.enabled():
                 try:
-                    result["app"] = appupdate.check_and_download(APP_VERSION, force=True)
+                    result["app"] = appupdate.check_and_download(APP_VERSION)
                 except Exception as exc:
                     applog.error("Ручна перевірка оновлення R-TubeUA не вдалася", exc)
                     result["error"] = str(exc)

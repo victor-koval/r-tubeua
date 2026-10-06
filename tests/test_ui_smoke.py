@@ -20,7 +20,7 @@ from rtube import app, formats, settings, tools
 
 tmp = tempfile.mkdtemp()
 real_get = settings.get
-off = ("resume_queue", "ytdlp_autoupdate", "app_autoupdate", "watch_clipboard", "notify_done",
+off = ("resume_queue", "check_updates_on_start", "watch_clipboard", "notify_done",
        "taskbar_progress")
 settings_get = mock.patch.object(settings, "get", side_effect=lambda k: False if k in off
                                  else (tmp if k == "download_dir" else real_get(k)))

@@ -111,7 +111,7 @@ class ApplyTest(unittest.TestCase):
 class CheckTest(unittest.TestCase):
     def test_not_frozen_does_nothing(self):
         with mock.patch.object(appupdate, "fetch_latest", side_effect=AssertionError):
-            self.assertIsNone(appupdate.check_and_download("1.3.1", force=True))
+            self.assertIsNone(appupdate.check_and_download("1.3.1"))
 
     def test_newer_release_downloaded_and_tested(self):
         r = appupdate.parse_release(release())
@@ -121,10 +121,10 @@ class CheckTest(unittest.TestCase):
                 mock.patch.object(appupdate, "selftest", return_value=True), \
                 mock.patch.object(appupdate.settings, "set_many"), \
                 mock.patch.object(appupdate, "applog"):
-            self.assertEqual(appupdate.check_and_download("1.3.1", force=True), "1.4.0")
+            self.assertEqual(appupdate.check_and_download("1.3.1"), "1.4.0")
             self.assertEqual(appupdate.state["path"], "x.exe")
             appupdate.state.update(version=None, path=None)
-            self.assertIsNone(appupdate.check_and_download("1.4.0", force=True))
+            self.assertIsNone(appupdate.check_and_download("1.4.0"))
             dl.assert_called_once()
 
 

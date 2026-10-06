@@ -1,9 +1,10 @@
 """Оновлення самої програми з релізів GitHub.
 
 yt-dlp оновлюється сам (ytupdate.py), а .exe колегам доводилось роздавати
-руками — і виправлення до них не доходили. Тепер програма раз на кілька
-годин питає GitHub про останній реліз; новіший R-TubeUA.exe тихо завантажує
-в %APPDATA%\\R-TubeUA\\update, звіряє розмір і sha256 (GitHub дає їх для
+руками — і виправлення до них не доходили. Тепер при кожному запуску (якщо
+так налаштовано) і кнопкою «Перевірити зараз» програма питає GitHub про
+останній реліз; новіший R-TubeUA.exe тихо завантажує в
+%APPDATA%\\R-TubeUA\\update, звіряє розмір і sha256 (GitHub дає їх для
 кожного файлу релізу) і перевіряє окремим процесом (--app-selftest).
 Унизу вікна тоді з'являється «Оновити й перезапустити».
 
@@ -22,7 +23,6 @@ import re
 import shutil
 import subprocess
 import sys
-import time
 import urllib.parse
 import urllib.request
 
@@ -34,7 +34,6 @@ LATEST_API = f"https://api.github.com/repos/{REPO}/releases/latest"
 ASSET_NAME = "R-TubeUA.exe"
 DOWNLOAD_HOSTS = ("github.com",)
 UPDATE_DIR = os.path.join(settings.CONFIG_DIR, "update")
-CHECK_INTERVAL = 6 * 3600
 
 # Завантажене й перевірене оновлення, що чекає на «Оновити й перезапустити».
 state = {"version": None, "path": None}
@@ -140,13 +139,12 @@ def selftest_main(version):
         return 1
 
 
-def check_and_download(current, force=False):
-    """Новий реліз → завантажений і перевірений файл. Повертає версію або None."""
+def check_and_download(current):
+    """Новий реліз → завантажений і перевірений файл. Повертає версію або None.
+    Викликається при запуску програми (якщо так налаштовано) і кнопкою
+    «Перевірити зараз»."""
     if not enabled():
         return None
-    if not force and time.time() - float(settings.get("app_checked_at") or 0) < CHECK_INTERVAL:
-        return None
-    settings.set_many(app_checked_at=time.time())
     release = fetch_latest()
     if not release or not is_newer(release["version"], current):
         applog.info(f"R-TubeUA актуальна ({current}; останній реліз "

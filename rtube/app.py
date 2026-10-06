@@ -184,21 +184,22 @@ class RTubeApp(ctk.CTk, *_DND_BASES):
     def _check_environment(self):
         self.send_environment()
         appupdate.cleanup(APP_VERSION)
-        # Свіжий yt-dlp — після перевірки оточення, щоб не гальмувати старт.
-        if settings.get("ytdlp_autoupdate"):
-            try:
-                installed = ytupdate.check_and_install()
-                if installed:
-                    self.ui_events.put(("ytdlp_ready", installed))
-            except Exception as exc:
-                applog.error("Оновлення yt-dlp не вдалося — працюю на поточному", exc)
-        if settings.get("app_autoupdate"):
-            try:
-                version = appupdate.check_and_download(APP_VERSION)
-                if version:
-                    self.ui_events.put(("app_ready", version))
-            except Exception as exc:
-                applog.error("Перевірка оновлення R-TubeUA не вдалася", exc)
+        # Оновлення — після перевірки оточення, щоб не гальмувати старт; при
+        # кожному запуску (без таймера), якщо це не вимкнено в налаштуваннях.
+        if not settings.get("check_updates_on_start"):
+            return
+        try:
+            installed = ytupdate.check_and_install()
+            if installed:
+                self.ui_events.put(("ytdlp_ready", installed))
+        except Exception as exc:
+            applog.error("Оновлення yt-dlp не вдалося — працюю на поточному", exc)
+        try:
+            version = appupdate.check_and_download(APP_VERSION)
+            if version:
+                self.ui_events.put(("app_ready", version))
+        except Exception as exc:
+            applog.error("Перевірка оновлення R-TubeUA не вдалася", exc)
 
     def send_environment(self):
         try:

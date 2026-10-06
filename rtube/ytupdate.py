@@ -32,7 +32,6 @@ CURRENT_PATH = os.path.join(LIB_DIR, "current.json")
 PYPI_JSON = "https://pypi.org/pypi/{name}/json"
 PYPI_VERSION_JSON = "https://pypi.org/pypi/{name}/{version}/json"
 WHEEL_HOST = "files.pythonhosted.org"
-CHECK_INTERVAL = 12 * 3600
 PACKAGES = ("yt_dlp/", "yt_dlp_ejs/")
 
 # Що зараз працює: вшита версія чи з lib, і чи чекає застосування новіша.
@@ -272,15 +271,13 @@ def _prune(keep):
             shutil.rmtree(path, ignore_errors=True)
 
 
-def check_and_install(force=False):
+def check_and_install():
     """Ставить свіжий yt-dlp у lib. Повертає встановлену версію або None.
 
-    Застосується після перезапуску: модуль yt_dlp у пам'яті вже завантажено.
+    Викликається при запуску програми (якщо так налаштовано) і кнопкою
+    «Перевірити зараз». Застосується після перезапуску: модуль yt_dlp у
+    пам'яті вже завантажено.
     """
-    if not force and time.time() - float(settings.get("ytdlp_checked_at") or 0) < CHECK_INTERVAL:
-        return None
-    settings.set_many(ytdlp_checked_at=time.time())
-
     latest = _get_json(PYPI_JSON.format(name="yt-dlp"))
     version = latest["info"]["version"]
     current = state["pending"] or state["active"] or _loaded_version()

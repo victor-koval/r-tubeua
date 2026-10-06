@@ -33,5 +33,28 @@ class SaveTest(unittest.TestCase):
         self.assertFalse(os.path.exists(self.path + ".tmp") and os.path.getsize(self.path) == 0)
 
 
+class MigrationTest(unittest.TestCase):
+    """Два старі перемикачі «Автоматично оновлювати…» → один «при запуску»."""
+
+    def load(self, stored):
+        import tempfile
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        path = os.path.join(tmp.name, "settings.json")
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(stored, f)
+        with mock.patch.object(settings, "SETTINGS_PATH", path),                 mock.patch.object(settings, "_cache", None):
+            return settings.get("check_updates_on_start")
+
+    def test_default_on(self):
+        self.assertTrue(self.load({}))
+
+    def test_both_old_switches_off_keeps_it_off(self):
+        self.assertFalse(self.load({"ytdlp_autoupdate": False, "app_autoupdate": False}))
+
+    def test_one_old_switch_on_means_on(self):
+        self.assertTrue(self.load({"ytdlp_autoupdate": True, "app_autoupdate": False}))
+
+
 if __name__ == "__main__":
     unittest.main()

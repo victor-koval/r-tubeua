@@ -211,7 +211,7 @@ class InstallTest(ActivateTest):
         with contextlib.ExitStack() as stack:
             for p in self.fake_pypi():
                 stack.enter_context(p)
-            self.assertEqual(ytupdate.check_and_install(force=True), "2099.1.1")
+            self.assertEqual(ytupdate.check_and_install(), "2099.1.1")
         target = os.path.join(self.lib, "2099.1.1")
         self.assertTrue(os.path.isfile(os.path.join(target, "yt_dlp", "version.py")))
         self.assertTrue(os.path.isfile(os.path.join(target, "yt_dlp_ejs", "__init__.py")))
@@ -225,7 +225,7 @@ class InstallTest(ActivateTest):
             for p in self.fake_pypi(selftest_ok=False):
                 stack.enter_context(p)
             with self.assertRaises(ytupdate.UpdateError):
-                ytupdate.check_and_install(force=True)
+                ytupdate.check_and_install()
         self.assertIn("2099.1.1", self.settings.values["ytdlp_bad"])
         self.assertFalse(os.path.exists(os.path.join(self.lib, "2099.1.1")))
         self.assertIsNone(ytupdate.read_current())
@@ -238,14 +238,16 @@ class InstallTest(ActivateTest):
                 stack.enter_context(p)
             stack.enter_context(mock.patch.object(ytupdate, "_loaded_version",
                                                   return_value="2099.01.01"))
-            self.assertIsNone(ytupdate.check_and_install(force=True))
+            self.assertIsNone(ytupdate.check_and_install())
         self.assertFalse(os.path.exists(os.path.join(self.lib, "2099.1.1")))
 
-    def test_throttled(self):
+    def test_no_timer_checks_every_time(self):
+        # Раніше перевірка пропускалась, якщо була менш ніж 12 год тому.
         self.settings.values["ytdlp_checked_at"] = __import__("time").time()
-        with mock.patch.object(ytupdate, "_get_json") as get:
-            self.assertIsNone(ytupdate.check_and_install())
-            get.assert_not_called()
+        with contextlib.ExitStack() as stack:
+            for p in self.fake_pypi():
+                stack.enter_context(p)
+            self.assertEqual(ytupdate.check_and_install(), "2099.1.1")
 
 
 if __name__ == "__main__":

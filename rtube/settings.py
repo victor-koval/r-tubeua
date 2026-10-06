@@ -56,13 +56,10 @@ DEFAULTS = {
     "notify_done": True,       # сповіщення Windows, коли все завантажено
     "taskbar_progress": True,  # прогрес на іконці в панелі задач
     "resume_queue": True,      # продовжувати незавершене після перезапуску
-    "ytdlp_autoupdate": True,  # самостійно оновлювати yt-dlp (див. ytupdate.py)
+    "check_updates_on_start": True,  # при запуску питати про нову версію програми й yt-dlp
     "watch_clipboard": False,  # скопійоване посилання на YouTube саме йде на аналіз
-    "app_autoupdate": True,    # завантажувати нові версії програми з GitHub (див. appupdate.py)
-    "app_checked_at": 0,       # коли востаннє питали GitHub про новий реліз
     "app_bad": [],             # версії програми, що не пройшли самоперевірку
     "geometry": "",
-    "ytdlp_checked_at": 0,     # коли востаннє питали PyPI про свіжий yt-dlp
     "ytdlp_bad": [],           # версії yt-dlp, що не пройшли самоперевірку або не запустились
 }
 
@@ -70,7 +67,7 @@ DEFAULTS = {
 # Службове (розмір вікна, стан оновлювача) сюди не входить.
 USER_KEYS = ("download_dir", "max_height", "container", "audio_container", "preferred_audio",
              "keep_original", "subs_mode", "theme", "notify_done", "taskbar_progress",
-             "resume_queue", "ytdlp_autoupdate", "watch_clipboard", "app_autoupdate")
+             "resume_queue", "check_updates_on_start", "watch_clipboard")
 
 _lock = threading.Lock()
 _cache = None
@@ -86,6 +83,9 @@ def _load():
             stored = json.load(f)
         if isinstance(stored, dict):
             data.update({k: v for k, v in stored.items() if k in DEFAULTS})
+            if "check_updates_on_start" not in stored and \
+                    stored.get("ytdlp_autoupdate") is False and stored.get("app_autoupdate") is False:
+                data["check_updates_on_start"] = False      # з версій до 1.7
     except Exception:
         pass
     _cache = data
