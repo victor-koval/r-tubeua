@@ -469,5 +469,67 @@ class SharedVideoQueueTest(unittest.TestCase):
         self.assertEqual(states[jobs[1].id],
                          "Те саме відео, що й у 590312170 — файл 590312170.mp4")
 
+class QuickSkipTest(unittest.TestCase):
+    """Файл уже в теці — «Уже є» без аналізу на YouTube і без паузи."""
+
+    URL = "https://www.youtube.com/watch?v=pn6mZ0Bcugo"
+
+    def setUp(self):
+        import tempfile
+        self.tmp = tempfile.TemporaryDirectory()
+        self.probes = {}
+        self.network = []
+        for patch in (mock.patch.object(downloader, "applog", mock.MagicMock()),
+                      mock.patch.object(downloader, "analyze", side_effect=AssertionError("мережа")),
+                      mock.patch.object(downloader, "probe_file",
+                                        side_effect=lambda path: self.probes.get(path, {}))):
+            patch.start()
+            self.addCleanup(patch.stop)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def file(self, name, comment, quality, duration=95.0):
+        path = os.path.join(self.tmp.name, name)
+        open(path, "wb").close()
+        self.probes[path] = {"comment": comment, "quality": quality, "duration": duration}
+        return path
+
+    def run_job(self, limit=1080):
+        job = downloader.Job(url=self.URL, title="t", out_dir=self.tmp.name, product_id="590312170",
+                             prefs={"max_height": limit}, sub_key=None)
+        runner = downloader._Runner(job, lambda *a: None, on_network=lambda: self.network.append(1))
+        return job, runner
+
+    def test_same_video_same_quality_skips_without_network(self):
+        path = self.file("590312170.mp4", self.URL, 1080)
+        job, runner = self.run_job()
+        self.assertEqual(runner.run(), downloader.ALREADY_NOTE)
+        self.assertEqual(job.filepath, path)
+        self.assertEqual(job.duration, 95.0)
+        self.assertEqual(self.network, [])
+
+    def test_other_quality_goes_the_long_way(self):
+        self.file("590312170.mp4", self.URL, 720)
+        job, runner = self.run_job()
+        self.assertIsNone(runner._quick_skip())
+
+    def test_best_quality_needs_analysis(self):
+        self.file("590312170.mp4", self.URL, 1080)
+        job, runner = self.run_job(limit=0)
+        self.assertIsNone(runner._quick_skip())
+
+    def test_finds_same_video_under_suffix(self):
+        self.file("590312170.mp4", "https://www.youtube.com/watch?v=other000000", 1080)
+        path = self.file("590312170_2.mp4", self.URL, 1080)
+        job, runner = self.run_job()
+        with self.assertRaises(downloader.AlreadyHave):
+            runner._quick_skip()
+        self.assertEqual(job.filepath, path)
+
+    def test_no_file_goes_the_long_way(self):
+        job, runner = self.run_job()
+        self.assertIsNone(runner._quick_skip())
+
 if __name__ == "__main__":
     unittest.main()

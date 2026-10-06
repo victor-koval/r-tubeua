@@ -9,6 +9,7 @@ import collections
 import copy
 import glob
 import itertools
+import json
 import os
 import queue
 import re
@@ -260,6 +261,34 @@ def probe_comment(path):
         return None
 
 
+def probe_file(path):
+    """Коментар (посилання на ролик), якість і тривалість — одним запуском
+    ffprobe. Порожній словник — не вдалося дізнатися."""
+    ffprobe = tools.find_ffprobe()
+    if not ffprobe:
+        return {}
+    try:
+        out = subprocess.run(
+            [ffprobe, "-v", "error", "-select_streams", "v:0", "-show_entries",
+             "stream=width,height:format=duration:format_tags=comment", "-of", "json", path],
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=20,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0)).stdout
+        data = json.loads(out or "{}")
+    except Exception:
+        return {}
+    fmt = data.get("format") or {}
+    tags = {k.lower(): v for k, v in (fmt.get("tags") or {}).items()}
+    stream = (data.get("streams") or [{}])[0]
+    quality = None
+    if stream.get("width") and stream.get("height"):
+        quality = formats.quality_of(int(stream["width"]), int(stream["height"]))
+    try:
+        duration = float(fmt.get("duration") or 0) or None
+    except ValueError:
+        duration = None
+    return {"comment": tags.get("comment"), "quality": quality, "duration": duration}
+
+
 MAX_ID_SUFFIX = 99
 
 
@@ -336,6 +365,7 @@ class Job:
     prefs: dict = field(default_factory=dict)
     id: int = field(default_factory=lambda: next(_job_ids))
     state: str = "queued"           # queued / running / done / error / cancelled
+    duration: float = 0.0           # тривалість з наявного файлу, коли ролик не аналізували
     status: str = "У черзі"         # останній текст стану — для звіту й пізно створеного рядка
     filepath: str = ""
     keep_partial: bool = False      # при скасуванні лишити .part, щоб докачати потім
@@ -441,7 +471,7 @@ class DownloadManager:
         self._paused = False
         self._running = None
         self._worker_ident = None
-        self._last_network = 0.0    # коли закінчилось попереднє завантаження (monotonic)
+        self._last_network = 0.0    # коли востаннє ходили на YouTube (monotonic)
         # Що вже скачано в цьому сеансі: same_video_key → шлях. У шаблоні
         # Rozetka одне відео буває в 9 товарів — качаємо раз, решта посилається на файл.
         self._done_files = dict(done_files or {})
@@ -518,13 +548,12 @@ class DownloadManager:
                 self._process(job)
             finally:
                 self._running = None
-                self._last_network = time.monotonic()
 
     def _process(self, job):
         for attempt in itertools.count():
             try:
                 note = _Runner(job, self._emit, self._done_files, self._info_cache,
-                               throttle=self._throttle).run()
+                               throttle=self._throttle, on_network=self._touch_network).run()
             except Cancelled:
                 self._stopped(job)
                 return
@@ -573,6 +602,9 @@ class DownloadManager:
                 return False
         return not job.cancel_event.is_set()
 
+    def _touch_network(self):
+        self._last_network = time.monotonic()
+
     def _throttle(self, job):
         """Перед аналізом ролика з пакета: не частіше, ніж раз на BATCH_GAP секунд."""
         if not job.prefs:
@@ -585,10 +617,12 @@ class DownloadManager:
 class _Runner:
     """Одне завантаження: параметри, прогрес, повтор у разі збою."""
 
-    def __init__(self, job, emit, done_files=None, info_cache=None, throttle=None):
+    def __init__(self, job, emit, done_files=None, info_cache=None, throttle=None,
+                 on_network=None):
         self.job = job
         self.emit = emit
         self.throttle = throttle    # пауза перед запитом до YouTube (див. DownloadManager._throttle)
+        self.on_network = on_network or (lambda: None)   # «щойно ходили на YouTube»
         self.done_files = done_files if done_files is not None else {}
         self.info_cache = info_cache if info_cache is not None else {}
         self.part_sizes = {}      # format_id → розмір у байтах
@@ -786,7 +820,10 @@ class _Runner:
                 if self.throttle:
                     self.throttle(job)
                 self.emit("progress", job, None, "Аналіз…")
-                job.info = analyze(job.url)
+                try:
+                    job.info = analyze(job.url)
+                finally:
+                    self.on_network()
                 self.info_cache[job.url] = (time.monotonic(), job.info)
             job.title = job.info.get("title") or job.title
         if job.video_key is None or job.audio_lang is None or job.sub_key is None:
@@ -831,10 +868,38 @@ class _Runner:
         applog.info(f"{target}: копія {source} (той самий ролик)")
         return f"Готово — копія {os.path.basename(source)} (те саме відео)"
 
+    def _quick_skip(self):
+        """Файл цього товару з цим самим роликом і потрібною якістю вже в теці —
+        «Уже є» одразу, без аналізу на YouTube і без паузи між запитами (раніше
+        ~4–5 с на кожен такий товар). Лише коли якість відома без аналізу:
+        «до 1080p» і файл 1080p, або «лише звук». Інакше — звичайний шлях."""
+        job = self.job
+        if not job.product_id or job.info is not None or job.video_key is not None:
+            return
+        limit = job.prefs.get("max_height")
+        audio_only = limit == formats.AUDIO_ONLY
+        if not audio_only and not (isinstance(limit, int) and limit > 0):
+            return              # «найкраща» — яка саме, без аналізу не знати
+        for n in range(1, MAX_ID_SUFFIX + 1):
+            name = job.product_id if n == 1 else f"{job.product_id}_{n}"
+            path = os.path.join(job.out_dir, f"{name}.{job.container}")
+            if not os.path.isfile(path):
+                return
+            probe = probe_file(path)
+            if probe.get("comment") != job.url:
+                continue        # інший ролик того ж товару — дивимось наступне ім'я
+            if audio_only or probe.get("quality") == limit:
+                job.filepath = path
+                job.duration = probe.get("duration") or 0.0
+                applog.info(f"Уже є: {path} (той самий ролик, {limit}) — без аналізу")
+                raise AlreadyHave(path)
+            return              # той самий ролик іншої якості — вирішить аналіз
+
     def _run(self):
         job = self.job
         os.makedirs(job.out_dir, exist_ok=True)
         note = ""
+        self._quick_skip()
         self._prepare()
         if job.product_id:
             shared = self._use_sibling()
@@ -891,12 +956,15 @@ class _Runner:
         self._check_disk_space()
         applog.info(f"Завантаження {self.job.url}: format={opts['format']}, "
                     f"контейнер={self.job.container}, субтитри={self.job.sub_key if with_subs else '—'}")
-        with yt_dlp.YoutubeDL(opts) as ydl:
-            # Як --load-info-json: info з аналізу вже містить розшифровані
-            # посилання, тож YouTube вдруге не питаємо, а ID на кшталт
-            # 140-19 гарантовано відповідають тим самим доріжкам.
-            return ydl.process_ie_result(ydl.sanitize_info(copy.deepcopy(info), True),
-                                         download=True)
+        try:
+            with yt_dlp.YoutubeDL(opts) as ydl:
+                # Як --load-info-json: info з аналізу вже містить розшифровані
+                # посилання, тож YouTube вдруге не питаємо, а ID на кшталт
+                # 140-19 гарантовано відповідають тим самим доріжкам.
+                return ydl.process_ie_result(ydl.sanitize_info(copy.deepcopy(info), True),
+                                             download=True)
+        finally:
+            self.on_network()       # пауза до наступного аналізу — від кінця завантаження
 
     def _id_opts(self, info, with_subs):
         """Ім'я з ID товару: 590312170, 590312170_2… — див. pick_id_target."""

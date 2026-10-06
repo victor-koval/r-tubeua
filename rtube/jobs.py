@@ -19,7 +19,7 @@ QUEUED_ROWS = 20
 
 def job_duration(job):
     """Тривалість ролика в секундах або None (ще не проаналізовано, пряма трансляція)."""
-    duration = (job.info or {}).get("duration")
+    duration = (job.info or {}).get("duration") or job.duration
     return duration if isinstance(duration, (int, float)) and duration > 0 else None
 
 
