@@ -225,7 +225,12 @@ class BatchCard(uikit.Card):
         self._fit_table()
 
         n = len(self.entries)
-        self.lbl_title.configure(text=f"Пакет: {n} відео" +
+        # Зі списком ID рядок — це товар (відео в них можуть повторюватись).
+        if any(e[2] for e in self.entries):
+            counted = f"{n} {plural(n, 'товар', 'товари', 'товарів')}"
+        else:
+            counted = f"{n} відео"
+        self.lbl_title.configure(text=f"Пакет: {counted}" +
                                  (f" — {self.title_suffix}" if self.title_suffix else ""))
         groups = len({r["group"] for r in rows if r["group"] is not None})
         grouped = sum(1 for r in rows if r["group"] is not None)
