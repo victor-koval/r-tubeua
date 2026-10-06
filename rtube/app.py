@@ -24,7 +24,7 @@ except Exception:
 
 from . import (applog, appupdate, downloader, ffinstall, formats, notify, queuestore, settings,
                sheets, taskbar, tools, uikit, watchdog, ytupdate)
-from .batch import BatchCard
+from .batch import BatchCard, plural
 from .jobs import FINISHED, JobsPanel
 from .statusbar import StatusBar
 from .uikit import FONT_SMALL, FONT_UI, FONT_UI_BOLD, GREEN, GREEN_HOVER
@@ -428,7 +428,12 @@ class RTubeApp(ctk.CTk, *_DND_BASES):
     def _show_file_batch(self, name, result):
         entries = [(url, url, pid or "") for pid, url in result.pairs]
         self._show_batch(f"з файлу {name}", entries)
-        parts = [f"{name}: {len(entries)} відео"]
+        videos = len({e[0] for e in entries})
+        if result.with_ids:
+            parts = [f"{name}: {len(entries)} {plural(len(entries), 'товар', 'товари', 'товарів')}"
+                     + (f", {videos} різних відео" if videos != len(entries) else "")]
+        else:
+            parts = [f"{name}: {len(entries)} відео"]
         if result.with_ids < len(entries):
             parts.append(f"з ID — {result.with_ids}, решта назвуться латиницею")
         if result.skipped:

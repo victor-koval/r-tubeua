@@ -56,6 +56,24 @@ class DescribeTest(unittest.TestCase):
         self.assertIn("Перші 2", rows[2]["note"])
 
 
+class GroupColorTest(unittest.TestCase):
+    def test_neighbouring_groups_never_share_a_color(self):
+        # Дев'ять груп по два товари; групи 0 і 8 стоять поруч — «по колу»
+        # з 8 кольорів вони б збіглися.
+        urls = [f"https://www.youtube.com/watch?v=video{i:06d}" for i in range(9)]
+        order = list(range(9)) + [8, 0] + list(range(1, 8))
+        entries = [(urls[g], urls[g], str(100 + n)) for n, g in enumerate(order)]
+        rows = batch.describe(entries)
+        for a, b in zip(rows, rows[1:]):
+            if a["group"] != b["group"]:
+                self.assertNotEqual(a["color"], b["color"], (a, b))
+        self.assertEqual(len({r["color"] for r in rows}), 8)
+
+    def test_single_rows_have_no_color(self):
+        rows = batch.describe([(A, A, "1"), (B, B, "2")])
+        self.assertEqual([r["color"] for r in rows], [None, None])
+
+
 class PluralTest(unittest.TestCase):
     def test_forms(self):
         forms = [batch.plural(n, "товар", "товари", "товарів") for n in (1, 2, 5, 11, 21, 22, 112)]

@@ -81,7 +81,29 @@ def describe(entries, busy=(), limit=None):
         for i in indexes:
             rows[i]["group"] = group
         group += 1
+    _assign_colors(rows)
     return rows
+
+
+def _assign_colors(rows, palette=None):
+    """row["color"] — номер кольору групи. Не просто «номер групи по колу»
+    (тоді п'ята група збігалась би з першою поруч із нею), а перший вільний
+    від груп, з якими вона межує рядками; починаючи зі свого номера — щоб
+    кольори розходились по всій палітрі."""
+    palette = palette or len(GROUP_COLORS)
+    neighbours = {}
+    for a, b in zip(rows, rows[1:]):
+        ga, gb = a["group"], b["group"]
+        if ga is not None and gb is not None and ga != gb:
+            neighbours.setdefault(ga, set()).add(gb)
+            neighbours.setdefault(gb, set()).add(ga)
+    color = {}
+    for g in sorted({r["group"] for r in rows if r["group"] is not None}):
+        taken = {color[n] for n in neighbours.get(g, ()) if n in color}
+        color[g] = next(((g + k) % palette for k in range(palette)
+                         if (g + k) % palette not in taken), g % palette)
+    for row in rows:
+        row["color"] = color.get(row["group"])
 
 
 class BatchCard(uikit.Card):
@@ -217,7 +239,7 @@ class BatchCard(uikit.Card):
         self.tree.delete(*self.tree.get_children())
         for row in rows:
             tags = (row["kind"],) if row["group"] is None else \
-                (row["kind"], f"group{row['group'] % len(GROUP_COLORS)}")
+                (row["kind"], f"group{row['color']}")
             self.tree.insert("", "end", iid=str(row["n"] - 1), tags=tags,
                              values=(row["n"], row["pid"], row["video"], row["note"], REMOVE))
         has_ids = any(r["pid"] for r in rows)

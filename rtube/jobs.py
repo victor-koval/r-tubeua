@@ -131,13 +131,6 @@ class JobRow(ctk.CTkFrame):
         if job.state != "queued":
             self.set_state(job.state, job.status)     # рядок створено, коли завдання вже йшло
 
-    def set_group(self, group):
-        """Тло рядка — колір групи «те саме відео», або звичайне."""
-        color = uikit.SURFACE_RAISED if group is None else \
-            uikit.GROUP_COLORS[group % len(uikit.GROUP_COLORS)]
-        if self.cget("fg_color") != color:
-            self.configure(fg_color=color)
-
     def set_meta(self, title, summary):
         """Після відкладеного аналізу: справжня назва й обрана якість/доріжка."""
         self.lbl_title.configure(text=display_title(self.job))
@@ -400,28 +393,8 @@ class JobsPanel(uikit.Card):
             self.rows[job_id] = JobRow(self.jobs_list, self, self.jobs[job_id])
         self._regrid_rows()
 
-    def _groups(self):
-        """job.id → номер групи для товарів з тим самим роликом у тій самій теці
-        (один файл на всіх). Номери — за першою появою, щоб кольори не стрибали."""
-        members = {}
-        for job in sorted(self.jobs.values(), key=lambda j: j.id):
-            if job.product_id:
-                members.setdefault((job.url, os.path.normcase(job.out_dir)), []).append(job.id)
-        groups, index = {}, 0
-        for ids in members.values():
-            products = {self.jobs[i].product_id for i in ids}
-            products.update(p for i in ids for p in self.jobs[i].also_for)
-            if len(products) > 1:
-                for i in ids:
-                    groups[i] = index
-                index += 1
-        return groups
-
     def _regrid_rows(self):
         order = sorted(self.rows.values(), key=lambda r: row_order(r.job))
-        groups = self._groups()
-        for row in order:
-            row.set_group(groups.get(row.job.id))
         hidden = [j for j in self.jobs.values() if j.id not in self.rows]
         waiting = sum(1 for j in hidden if j.state in ACTIVE)
         parts = []
