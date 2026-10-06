@@ -213,8 +213,7 @@ class BatchCard(uikit.Card):
 
     def _render(self):
         """Таблиця, заголовок і кнопка — з поточних entries і «Скільки взяти»."""
-        busy = {(j.url, j.product_id) for j in self.app.jobs_panel.active_jobs()}
-        rows = describe(self.entries, busy, self._limit())
+        rows = describe(self.entries, self._busy(), self._limit())
         self.tree.delete(*self.tree.get_children())
         for row in rows:
             tags = (row["kind"],) if row["group"] is None else \
@@ -325,9 +324,25 @@ class BatchCard(uikit.Card):
         state = "disabled" if audio_only else "normal"
         self.chk_original.configure(state=state)
         self.opt_subs.configure(state=state)
-        self.btn_download.configure(text=f"⬇  Завантажити {self._count()} відео")
+        downloads, products = self.plan()
+        label = f"⬇  Завантажити {downloads} відео"
+        if products != downloads:
+            label += f" ({products} {plural(products, 'товар', 'товари', 'товарів')})"
+        self.btn_download.configure(text=label)
+
+    def plan(self):
+        """(скільки відео качатиметься, для скількох товарів) — з урахуванням
+        «Перші N», повторів і того, що вже в черзі."""
+        rows = describe(self.entries, self._busy(), self._limit())
+        downloads = sum(1 for r in rows if r["kind"] in ("", "shared"))
+        return downloads, downloads + sum(1 for r in rows if r["kind"] == "same")
+
+    def _busy(self):
+        return {(j.url, j.product_id) for j in self.app.jobs_panel.active_jobs()}
 
     def build_jobs(self, out_dir):
+        """Одне завдання на відео. Інші товари з тим самим відео — у also_for
+        першого: окремо вони не качаються й у черзі не стоять."""
         audio_only = self._is_audio_only()
         limit = formats.AUDIO_ONLY if audio_only else \
             _value_for(QUALITY_OPTIONS, self.opt_quality.get())
@@ -336,12 +351,19 @@ class BatchCard(uikit.Card):
             "audio": _value_for(AUDIO_OPTIONS, self.opt_audio.get()),
             "subs": "none" if audio_only else _value_for(SUBS_OPTIONS, self.opt_subs.get()),
         }
-        jobs, first_pid = [], {}
-        for url, title, product_id in self.entries[:self._count()]:
-            owner = first_pid.setdefault(url, product_id or "")
-            jobs.append(downloader.Job(
+        rows = describe(self.entries, self._busy(), self._limit())
+        jobs, owner_of = [], {}
+        for (url, title, product_id), row in zip(self.entries, rows):
+            if row["kind"] in ("skip", "over"):
+                continue
+            if row["kind"] == "same" and url in owner_of:
+                owner_of[url].also_for.append(product_id)
+                continue
+            job = downloader.Job(
                 url=url, title=title, out_dir=out_dir, container=self.container.get(),
                 keep_original=bool(self.keep_original_var.get()) and not audio_only,
                 sub_key=None, subs_mode=settings.get("subs_mode"), product_id=product_id or "",
-                same_as=owner if owner and owner != product_id else "", prefs=dict(prefs)))
+                prefs=dict(prefs))
+            owner_of.setdefault(url, job)
+            jobs.append(job)
         return jobs

@@ -84,6 +84,19 @@ class WriteReportTest(unittest.TestCase):
         self.assertEqual(fill(2), fill(3))
         self.assertNotEqual(fill(2), fill(4))
 
+    def test_total_counts_shared_file_once(self):
+        video = os.path.join(self.tmp.name, "590312170.mp4")
+        open(video, "wb").close()
+        items = [
+            {"product_id": "590312170", "url": "u", "title": "t", "filepath": video,
+             "state": "done", "text": "Готово", "duration": 100},
+            {"product_id": "610963253", "url": "u", "title": "t", "filepath": video,
+             "state": "done", "text": "Те саме відео, що й у 590312170 — файл 590312170.mp4",
+             "duration": 100},
+        ]
+        ws = load_workbook(report.write_report(os.path.join(self.tmp.name, "z.xlsx"), items)).active
+        self.assertEqual(ws.cell(ws.max_row, 8).value, "1,40")
+
     def test_default_name_is_latin(self):
         name = report.default_name(0)
         self.assertRegex(name, r"^zvit_\d{4}-\d\d-\d\d_\d{4}\.xlsx$")

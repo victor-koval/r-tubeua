@@ -328,7 +328,9 @@ class Job:
     sub_key: tuple = ()             # () — без субтитрів, None — вирішити за prefs
     subs_mode: str = "embed"        # embed / file
     product_id: str = ""            # ID товару — тоді файл зветься «590312170.mp4»
-    same_as: str = ""               # ID першого товару з тим самим роликом (з пакета) — для підпису
+    # ID інших товарів з тим самим роликом (з пакета): окремих завдань і файлів
+    # у них немає — їм дістається файл цього завдання (див. jobs.report_items).
+    also_for: list = field(default_factory=list)
     # max_height: 0 — найкраща, AUDIO_ONLY — лише звук; audio: "uk" / "orig";
     # subs: "none" / "author_uk"
     prefs: dict = field(default_factory=dict)
@@ -348,6 +350,9 @@ class Job:
 
     def summary(self):
         parts = [f"ID {self.product_id}"] if self.product_id else []
+        if self.also_for:
+            parts[-1:] = [f"{parts[-1] if parts else 'ID'} + ще {len(self.also_for)} "
+                          f"з тим самим відео"]
         if self.audio_only:
             parts.append(f"лише звук, {self.container}")
         elif self.video_key:
@@ -371,7 +376,7 @@ class Job:
                    audio_label=self.audio_label, container=self.container,
                    keep_original=self.keep_original, sub_key=self.sub_key,
                    subs_mode=self.subs_mode, product_id=self.product_id,
-                   same_as=self.same_as, prefs=dict(self.prefs))
+                   also_for=list(self.also_for), prefs=dict(self.prefs))
 
 
 def apply_prefs(job, info):

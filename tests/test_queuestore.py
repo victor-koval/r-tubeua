@@ -57,6 +57,15 @@ class QueueStoreTest(unittest.TestCase):
         self.assertFalse(os.path.exists(self.path))
 
 
+class AlsoForTest(unittest.TestCase):
+    def test_passengers_survive_restart(self):
+        job = downloader.Job(url="u", title="t", out_dir=".", product_id="1",
+                             also_for=["2", "3"])
+        restored = queuestore.dict_to_job(queuestore.job_to_dict(job))
+        self.assertEqual(restored.also_for, ["2", "3"])
+        self.assertEqual(queuestore.dict_to_job({"url": "u", "out_dir": "."}).also_for, [])
+
+
 class DoneStoreTest(unittest.TestCase):
     """Що вже скачано — між запусками, але лише для незмінених файлів."""
 

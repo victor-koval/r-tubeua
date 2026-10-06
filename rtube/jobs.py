@@ -37,11 +37,39 @@ def display_title(job):
     return tools.short_url(title) if title.startswith("http") else title
 
 
-def queued_text(job):
-    """«У черзі» — і, для товару з тим самим роликом, що в іншого, з ким саме."""
-    if job.same_as:
-        return f"У черзі · те саме відео, що й у {job.same_as} — качається один раз"
-    return "У черзі"
+def unique_seconds(jobs):
+    """Сума тривалостей завершених — кожен файл один раз: товар, що
+    посилається на чужий файл («те саме відео»), часу не додає."""
+    seen, total = set(), 0
+    for job in jobs:
+        if job.state != "done":
+            continue
+        key = os.path.normcase(os.path.abspath(job.filepath)) if job.filepath else job.id
+        if key in seen:
+            continue
+        seen.add(key)
+        total += job_duration(job) or 0
+    return total
+
+
+def report_items(jobs):
+    """Рядки звіту: по рядку на кожен товар — і для тих, що їдуть «пасажирами»
+    в завдання з тим самим відео (also_for): їм дістається його файл і стан."""
+    items = []
+    for job in sorted(jobs, key=lambda j: j.id):
+        base = {"url": job.url, "title": job.title, "duration": job_duration(job)}
+        items.append(dict(base, product_id=job.product_id, filepath=job.filepath,
+                          state=job.state, text=job.status))
+        for pid in job.also_for:
+            if job.state == "done" and job.filepath:
+                text = downloader.same_video_note(job.filepath)
+            elif job.state in ACTIVE:
+                text = f"У черзі · те саме відео, що й у {job.product_id}"
+            else:
+                text = f"{job.status} (те саме відео, що й у {job.product_id})"
+            items.append(dict(base, product_id=pid, state=job.state, text=text,
+                              filepath=job.filepath if job.state == "done" else ""))
+    return items
 
 
 def row_order(job):
@@ -83,7 +111,7 @@ class JobRow(ctk.CTkFrame):
         self.bar.set(0)
         self.bar.grid(row=2, column=0, sticky="ew", padx=(12, 8), pady=(6, 2))
         self.bar.grid_remove()
-        self.lbl_status = ctk.CTkLabel(self, text=queued_text(job), font=FONT_SMALL, anchor="w",
+        self.lbl_status = ctk.CTkLabel(self, text="У черзі", font=FONT_SMALL, anchor="w",
                                        text_color=uikit.TEXT_MUTED)
         self.lbl_status.grid(row=3, column=0, sticky="ew", padx=(12, 8), pady=(0, 8))
 
@@ -140,8 +168,6 @@ class JobRow(ctk.CTkFrame):
         self.lbl_status.configure(text=text, text_color=uikit.TEXT_MUTED)
 
     def set_state(self, state, text):
-        if state == "queued" and text == "У черзі":
-            text = queued_text(self.job)
         if state != "queued" or self.fraction:
             self.bar.grid()
         colors = {"done": uikit.STATE_OK, "error": uikit.STATE_ERROR,
@@ -162,7 +188,10 @@ class JobRow(ctk.CTkFrame):
                 # Окремого файлу немає — ім'я спільного вже в самому тексті.
                 self.lbl_status.configure(text_color=uikit.STATE_INFO)
             elif self.job.filepath:
-                self.lbl_status.configure(text=f"{text}  ·  {os.path.basename(self.job.filepath)}")
+                shown = f"{text}  ·  {os.path.basename(self.job.filepath)}"
+                if self.job.also_for:
+                    shown += f"  ·  спільний ще для {len(self.job.also_for)}"
+                self.lbl_status.configure(text=shown)
             self.btn_open.pack(side="left", padx=(0, 6))
             self.btn_folder.pack(side="left")
         elif state in ("error", "cancelled"):
@@ -337,9 +366,7 @@ class JobsPanel(uikit.Card):
             return
         dirs = {j.out_dir for j in jobs}
         out_dir = dirs.pop() if len(dirs) == 1 else self.app.dir_var.get()
-        items = [{"product_id": j.product_id, "url": j.url, "title": j.title,
-                  "filepath": j.filepath, "state": j.state, "text": j.status,
-                  "duration": job_duration(j)} for j in jobs]
+        items = report_items(jobs)
         path = os.path.join(out_dir, report.default_name())
         try:
             report.write_report(path, items)
@@ -382,7 +409,9 @@ class JobsPanel(uikit.Card):
                 members.setdefault((job.url, os.path.normcase(job.out_dir)), []).append(job.id)
         groups, index = {}, 0
         for ids in members.values():
-            if len({self.jobs[i].product_id for i in ids}) > 1:
+            products = {self.jobs[i].product_id for i in ids}
+            products.update(p for i in ids for p in self.jobs[i].also_for)
+            if len(products) > 1:
                 for i in ids:
                     groups[i] = index
                 index += 1
@@ -486,7 +515,7 @@ class JobsPanel(uikit.Card):
         if not done:
             self.lbl_total.set_value("", "")
             return
-        seconds = sum(job_duration(j) or 0 for j in done)
+        seconds = unique_seconds(done)
         value = uikit.format_min_sec(seconds)
         self.lbl_total.set_value(value, f"Завершено: {len(done)}  ·  ⏱ {value}")
 

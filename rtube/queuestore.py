@@ -16,7 +16,7 @@ from .settings import CONFIG_DIR
 QUEUE_PATH = os.path.join(CONFIG_DIR, "queue.json")
 
 _FIELDS = ("url", "title", "out_dir", "container", "keep_original", "subs_mode",
-           "video_key", "audio_lang", "audio_label", "sub_key", "prefs", "product_id", "same_as")
+           "video_key", "audio_lang", "audio_label", "sub_key", "prefs", "product_id", "also_for")
 
 
 def job_to_dict(job):
@@ -33,6 +33,7 @@ def dict_to_job(data):
         if kwargs.get(name) is not None:
             kwargs[name] = tuple(kwargs[name])
     kwargs["prefs"] = dict(kwargs.get("prefs") or {})
+    kwargs["also_for"] = [str(p) for p in kwargs.get("also_for") or []]
     if not kwargs.get("url") or not kwargs.get("out_dir"):
         raise ValueError("у записі черги немає url або теки")
     kwargs.setdefault("title", kwargs["url"])

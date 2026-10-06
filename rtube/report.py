@@ -90,7 +90,7 @@ def write_report(path, items):
     ws.title = "Звіт"
     ws.append(HEADERS)
     groups = shared_groups(items)
-    total = 0
+    total, counted = 0, set()
     for n, item in enumerate(items, 1):
         path_ = item.get("filepath") or ""
         shares = (item.get("text") or "").startswith(SAME_VIDEO)
@@ -98,7 +98,10 @@ def write_report(path, items):
         if item.get("state") == "done" and path_ and os.path.isfile(path_) and not shares:
             size = round(os.path.getsize(path_) / 1024 / 1024, 1)
         duration = item.get("duration")
-        if duration and item.get("state") == "done":
+        # «Разом» — кожен файл один раз: товари з тим самим відео часу не додають.
+        key = _key(item) or id(item)
+        if duration and item.get("state") == "done" and key not in counted:
+            counted.add(key)
             total += duration
         ws.append([
             n,

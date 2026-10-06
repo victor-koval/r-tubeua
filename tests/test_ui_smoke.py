@@ -88,6 +88,20 @@ check(len(b.tree.get_children()) == 2, "список у таблиці")
 check("пропущено: 1" in a.lbl_url_hint.cget("text"), "підказка про пропущений рядок")
 a._show_batch("", entries); pump()
 a.download_batch(); pump()
+
+# повтори в пакеті: одне завдання на відео, решта товарів — у also_for
+same = [(entries[0][0], "t", "700000001"), (entries[0][0], "t", "700000002"),
+        ("https://www.youtube.com/watch?v=zzzzzzzzzzz", "t", "700000003")]
+a._show_batch("", same); pump()
+check("2 відео (3 товари)" in b.btn_download.cget("text"), "кнопка рахує відео й товари")
+before = len(p.jobs)
+a.download_batch(); pump()
+added = sorted(p.jobs.values(), key=lambda j: j.id)[before:]
+check(len(added) == 2 and added[0].also_for == ["700000002"], "одне завдання на відео")
+for j in added:
+    m.cancel(j)
+pump()
+p.clear_finished(); pump()
 check(len(p.jobs) == 4, "4 завдання")
 check(not a.batch_card.winfo_manager(), "картка пакета сховалась")
 

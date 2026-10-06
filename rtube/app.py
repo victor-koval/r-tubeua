@@ -534,9 +534,12 @@ class RTubeApp(ctk.CTk, *_DND_BASES):
             return
         added = self.enqueue(jobs)
         skipped = len(jobs) - added
+        products = sum(1 + len(j.also_for) for j in jobs)
         text = f"Додано в чергу: {added} відео"
+        if products != len(jobs):
+            text += f" для {products} товарів (однакові відео качаються раз)"
         if skipped:
-            text += f" (ще {skipped} вже були в черзі)"
+            text += f" · ще {skipped} вже були в черзі"
         self.hint(text, uikit.STATE_OK)
         self._show_card(None)
         self._ready_for_next()
