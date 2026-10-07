@@ -60,6 +60,22 @@ class StateTest(unittest.TestCase):
         self.assertIsNone(ftpstate.uploaded(local))
 
 
+class BatchProgressTest(unittest.TestCase):
+    def test_batch_progress_and_text(self):
+        mb = 1024 * 1024
+        done = uploader.UploadTask("a.mp4", "1", state=uploader.UPLOADED, total=40 * mb)
+        going = uploader.UploadTask("b.mp4", "2", state=uploader.UPLOADING, total=60 * mb,
+                                    sent=20 * mb, speed=5 * mb)
+        waiting = uploader.UploadTask("c.mp4", "3", state=uploader.QUEUED, total=20 * mb)
+        skipped = uploader.UploadTask("d.mp4", "4", state=uploader.NEED_CHOICE, total=99 * mb)
+        p = uploader.batch_progress([done, going, waiting, skipped])
+        self.assertEqual(p[:4], (1, 3, 60 * mb, 120 * mb))
+        self.assertAlmostEqual(p[5], 0.5)
+        self.assertEqual(uploader.describe_batch(p),
+                         "Заливається 2 з 3  ·  60 з 120 МБ  ·  5,0 МБ/с  ·  ще ~12 с")
+        self.assertIsNone(uploader.batch_progress([skipped]))
+
+
 class BaseTest(unittest.TestCase):
     """Вшита база + свій шар."""
 

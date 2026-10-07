@@ -64,8 +64,20 @@ class FtpCard(uikit.Card):
         self.tree.bind("<Double-1>", self._on_double)
         self.tree.bind("<Return>", self._on_double)
 
+        # Загальний прогрес заливання — під таблицею, поки щось заливається.
+        self.progress = ctk.CTkFrame(self, fg_color="transparent")
+        self.progress.grid(row=3, column=0, sticky="ew", padx=16, pady=(0, 4))
+        self.progress.grid_columnconfigure(0, weight=1)
+        self.bar = ctk.CTkProgressBar(self.progress, height=10, progress_color=GREEN)
+        self.bar.grid(row=0, column=0, sticky="ew")
+        self.bar.set(0)
+        self.lbl_progress = ctk.CTkLabel(self.progress, text="", font=FONT_SMALL, anchor="w",
+                                         text_color=uikit.STATE_INFO)
+        self.lbl_progress.grid(row=1, column=0, sticky="ew")
+        self.progress.grid_remove()
+
         buttons = ctk.CTkFrame(self, fg_color="transparent")
-        buttons.grid(row=3, column=0, sticky="ew", padx=16, pady=(6, 14))
+        buttons.grid(row=4, column=0, sticky="ew", padx=16, pady=(6, 14))
         buttons.grid_columnconfigure(0, weight=1)
         self.btn_upload = ctk.CTkButton(buttons, text="", height=44, font=uikit.FONT_BIG_BUTTON,
                                         command=self.upload)
@@ -99,6 +111,8 @@ class FtpCard(uikit.Card):
     def show(self, tasks):
         self.tasks = list(tasks)
         self.apply_style()
+        if self.app.upload_progress() is None:
+            self.progress.grid_remove()     # підсумок минулого заливання — не до нового плану
         self.tree.delete(*self.tree.get_children())
         for n, task in enumerate(self.tasks, 1):
             self.tree.insert("", "end", iid=str(task.id), values=self._values(n, task),
@@ -154,12 +168,28 @@ class FtpCard(uikit.Card):
         parts.append("подвійний клік — обрати теку")
         self.lbl_summary.configure(text="  ·  ".join(parts))
         busy = count(uploader.QUEUED, uploader.UPLOADING)
+        self._show_progress(busy)
         if ready:
             self.btn_upload.configure(text=f"↑  Залити на FTP ({ready})", state="normal")
         elif busy:
             self.btn_upload.configure(text=f"Заливається: {busy}…", state="disabled")
         else:
             self.btn_upload.configure(text="↑  Залити на FTP", state="disabled")
+
+    def _show_progress(self, busy):
+        """Смужка — поки щось заливається, і ще трохи після: «Залито 10 з 10»."""
+        progress = uploader.batch_progress(self.app.upload_batch)
+        if progress is None or (not busy and not self.progress.winfo_manager()):
+            if self.progress.winfo_manager() and progress is None:
+                self.progress.grid_remove()
+            return
+        fraction = progress[5]
+        self.bar.set(fraction if fraction is not None else 0)
+        self.lbl_progress.configure(text=uploader.describe_batch(progress),
+                                    text_color=uikit.STATE_INFO if busy else uikit.STATE_OK)
+        if not self.progress.winfo_manager():
+            self.progress.grid()
+            self.app.after_idle(self.app._fit_cards)
 
     # ── дії ──
     def upload(self):

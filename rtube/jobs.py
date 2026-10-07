@@ -159,9 +159,13 @@ class JobRow(ctk.CTkFrame):
         # Заливання на FTP — окремим рядком під станом завантаження, коли почалось.
         self.lbl_ftp = ctk.CTkLabel(self, text="", font=FONT_SMALL, anchor="w",
                                     text_color=uikit.STATE_INFO)
+        # Своя смужка заливання: зелена смужка завантаження вже повна, і «45 %»
+        # на ній плутало б. Синя й тонша — видно лише, поки файл заливається.
+        self.ftp_bar = ctk.CTkProgressBar(self, height=5, progress_color=uikit.STATE_INFO)
+        self.ftp_bar.set(0)
 
         self.actions = ctk.CTkFrame(self, fg_color="transparent")
-        self.actions.grid(row=0, column=1, rowspan=5, sticky="e", padx=(0, 10))
+        self.actions.grid(row=0, column=1, rowspan=6, sticky="e", padx=(0, 10))
         self.btn_cancel = ctk.CTkButton(self.actions, text="Скасувати", width=96, height=30,
                                         fg_color=uikit.DANGER, hover_color=uikit.DANGER_HOVER,
                                         command=lambda: panel.cancel_job(job))
@@ -246,18 +250,27 @@ class JobRow(ctk.CTkFrame):
             self.bar.configure(mode="determinate")
             self.bar.set(self.fraction)
 
-    def set_ftp(self, state, text):
-        """Стан заливання на FTP (uploader) — «↑ …» під станом завантаження."""
+    def set_ftp(self, state, text, fraction=None):
+        """Стан заливання на FTP (uploader) — «↑ …» під станом завантаження,
+        поки файл заливається — ще й тонка смужка."""
         if not state:
             self.lbl_ftp.grid_remove()
+            self.ftp_bar.grid_remove()
             return
+        if state == "uploading":
+            self.ftp_bar.set(fraction or 0)
+            if not self.ftp_bar.winfo_manager():
+                self.ftp_bar.grid(row=5, column=0, sticky="ew", padx=(12, 8), pady=(0, 8))
+        elif self.ftp_bar.winfo_manager():
+            self.ftp_bar.grid_remove()
         colors = {"uploaded": uikit.STATE_OK, "already": uikit.STATE_OK,
                   "error": uikit.STATE_ERROR, "need_choice": uikit.STATE_WARN,
                   "confirm": uikit.STATE_WARN, "cancelled": uikit.STATE_WARN}
         self.lbl_ftp.configure(text=f"↑ FTP: {text}",
                                text_color=colors.get(state, uikit.STATE_INFO))
         self.lbl_status.grid_configure(pady=(0, 0))
-        self.lbl_ftp.grid(row=4, column=0, sticky="ew", padx=(12, 8), pady=(0, 8))
+        self.lbl_ftp.grid(row=4, column=0, sticky="ew", padx=(12, 8),
+                          pady=(0, 2 if state == "uploading" else 8))
 
     def _open(self):
         path = self.job.filepath
@@ -558,8 +571,14 @@ class JobsPanel(uikit.Card):
         _show(self.btn_report, finished, column=3)
         _show(self.btn_clear, finished, column=4)
         to_ftp = self.ftp_jobs()
-        _show(self.btn_ftp, bool(to_ftp), column=5)
-        if to_ftp:
+        progress = self.app.upload_progress()
+        _show(self.btn_ftp, bool(to_ftp) or progress is not None, column=5)
+        if progress is not None:
+            # Поки заливається — прогрес на кнопці: видно й із закритою карткою.
+            fraction = progress[5]
+            self.btn_ftp.configure(text=f"↑ FTP {fraction * 100:.0f}%" if fraction is not None
+                                   else "↑ FTP…")
+        elif to_ftp:
             self.btn_ftp.configure(text=f"↑ На FTP ({len(to_ftp)})")
         if bool(active) or paused or finished:
             if not self.buttons.winfo_manager():
@@ -606,14 +625,14 @@ class JobsPanel(uikit.Card):
                 result.append(job)
         return result
 
-    def set_ftp(self, job, state, text, path=""):
+    def set_ftp(self, job, state, text, path="", fraction=None):
         """Стан заливання від uploader — у завдання і в рядок."""
         job.ftp_state, job.ftp_note = state, text
         if path:
             job.ftp_path = path
         row = self.rows.get(job.id)
         if row is not None:
-            row.set_ftp(state, text)
+            row.set_ftp(state, text, fraction)
 
     def _update_total(self):
         """«Завершено: 4 · ⏱ 12,34» — лише ті, що зараз у списку: «Прибрати
