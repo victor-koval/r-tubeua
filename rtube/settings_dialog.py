@@ -255,6 +255,19 @@ class SettingsDialog(ctk.CTkToplevel):
         self.lbl_ftp = ctk.CTkLabel(line, text=self._ftp_text(), font=FONT_SMALL,
                                     text_color=uikit.TEXT_MUTED)
         self.lbl_ftp.pack(side="left", padx=(12, 0))
+        line = ctk.CTkFrame(body, fg_color="transparent")
+        line.grid(row=8, column=0, columnspan=2, sticky="w", pady=(8, 0))
+        self.btn_history = uikit.SecondaryButton(line, text="Зібрати історію", width=210,
+                                                 command=self._toggle_history)
+        self.btn_history.pack(side="left")
+        self.lbl_history = ctk.CTkLabel(line, text="", font=FONT_SMALL, text_color=uikit.TEXT_MUTED)
+        self.lbl_history.pack(side="left", padx=(12, 0))
+        ctk.CTkLabel(body, text="Програма дивиться, куди ви вже клали товари в кожному розділі, "
+                                "і кладе нові так само. Довго (до години на розділ), іде у фоні; "
+                                "можна зупинити й продовжити.",
+                     font=FONT_SMALL, text_color=uikit.TEXT_MUTED, anchor="w", justify="left",
+                     wraplength=520).grid(row=9, column=0, columnspan=2, sticky="w", pady=(2, 4))
+        self._poll_history()
 
     def _ftp_text(self):
         age = ftpstate.tree_age()
@@ -263,6 +276,37 @@ class SettingsDialog(ctk.CTkToplevel):
         sections = [s for s in self.master.ftp_sections() if ftpstate.tree(s) is not None]
         return (f"теки прочитано {time.strftime('%d.%m %H:%M', time.localtime(age))}"
                 f" · {', '.join(sections)}")
+
+    def _toggle_history(self):
+        app = self.master
+        if app.history_running():
+            app.stop_history()
+        else:
+            self._apply_ftp(persist=True)
+            if not app.ftp_ready():
+                self.lbl_history.configure(text="вкажіть сервер, логін і пароль",
+                                           text_color=uikit.STATE_WARN)
+                return
+            app.start_history()
+        self._poll_history()
+
+    def _poll_history(self):
+        if not self.winfo_exists():
+            return
+        app = self.master
+        running = app.history_running()
+        status = app.history.status if app.history else None
+        if status:
+            color = uikit.STATE_ERROR if status.get("error") else                 uikit.STATE_INFO if running else uikit.TEXT_MUTED
+            self.lbl_history.configure(text=status["text"][:90], text_color=color)
+        else:
+            sizes = [f"{s}: {ftpstate.index_size(s)}" for s in app.ftp_sections()
+                     if ftpstate.index_size(s)]
+            self.lbl_history.configure(text=("у історії товарів — " + ", ".join(sizes)) if sizes
+                                       else "історію ще не збирали", text_color=uikit.TEXT_MUTED)
+        self.btn_history.configure(text="Зупинити збір" if running else "Зібрати історію")
+        if running:
+            self.after(1000, self._poll_history)
 
     def _apply_ftp(self, persist):
         self.master.set_ftp_login(self.ftp_host.get(), self.ftp_user.get(), self.ftp_pass.get(),

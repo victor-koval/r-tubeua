@@ -91,8 +91,10 @@ def save_cache():
         applog.warning(f"Кеш категорій товарів не записався: {exc}")
 
 
-def product_info(product_id, fetch=_get_json, save=True):
-    """Категорія товару або None (немає на сайті, немає мережі). Кешується."""
+def product_info(product_id, fetch=_get_json, save=True, languages=("ua", "ru")):
+    """Категорія товару або None (немає на сайті, немає мережі). Кешується.
+    languages=("ua",) — без російських назв (одним запитом): для історії FTP
+    досить mpath; такий запис позначено partial і доповниться, коли знадобиться."""
     gid = str(product_id).strip()
     if not gid.isdigit():
         return None
@@ -100,9 +102,11 @@ def product_info(product_id, fetch=_get_json, save=True):
     with _lock:
         hit = _load().get(gid)
     if hit:
-        ttl = CACHE_TTL if hit.get("info") else MISSING_TTL
-        if now - hit.get("t", 0) < ttl:
-            return hit.get("info")
+        info = hit.get("info")
+        ttl = CACHE_TTL if info else MISSING_TTL
+        complete = not (info and info.get("partial") and "ru" in languages)
+        if now - hit.get("t", 0) < ttl and complete:
+            return info
     try:
         try:
             main_ua = fetch(API.format(lang="ua", gid=gid))
@@ -112,7 +116,9 @@ def product_info(product_id, fetch=_get_json, save=True):
             exc.close()
             main_ua = None          # товару немає на сайті ({"success": false})
         info = parse(main_ua)
-        if info:
+        if info and "ru" not in languages:
+            info["partial"] = True
+        elif info:
             try:
                 info = parse(main_ua, fetch(API.format(lang="ru", gid=gid)))
             except Exception as exc:

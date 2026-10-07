@@ -246,6 +246,9 @@ a.close_ftp(); pump()
 a.open_settings(section="ftp"); pump()
 d = a._settings_window
 check(d.ftp_user.get() == "u", "вхід FTP у Налаштуваннях")
+# два залиті вище файли вже в історії video
+check(d.btn_history.cget("text") == "Зібрати історію" and "video: 2" in d.lbl_history.cget("text"),
+      "кнопка «Зібрати історію» й розмір історії")
 d.destroy(); pump()
 
 a.on_closing(force=True)

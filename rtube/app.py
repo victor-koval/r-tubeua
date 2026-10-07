@@ -23,7 +23,7 @@ except Exception:
     _DND_BASES = ()
 
 from . import (applog, appupdate, credentials, downloader, ffinstall, formats, ftpclient,
-               ftpstate, notify, queuestore, settings, uploader,
+               ftphistory, ftpstate, notify, queuestore, settings, uploader,
                sheets, taskbar, tools, uikit, watchdog, ytupdate)
 from .batch import BatchCard, plural
 from .ftp_card import STATE_TEXT as FTP_STATE_TEXT, FtpCard
@@ -70,6 +70,7 @@ class RTubeApp(ctk.CTk, *_DND_BASES):
         self.ftp_login = self._load_ftp_login()
         self.uploads = uploader.UploadManager(self._ftp_connect, self.ftp_sections)
         self.ftp_tasks = {}                  # task.id → UploadTask
+        self.history = None                  # ftphistory.HistoryBuilder, коли збирали
         self.ftp_by_job = {}                 # job.id → UploadTask
         self.ui_events = queue.Queue()     # результати аналізу з фонових потоків
         self.dir_var = ctk.StringVar(value=settings.get("download_dir"))
@@ -722,6 +723,19 @@ class RTubeApp(ctk.CTk, *_DND_BASES):
             self.uploads.plan(new)
         self.hint("Перевірте теки й натисніть «Залити на FTP»", uikit.STATE_OK)
 
+    def start_history(self):
+        """Фоновий збір історії розкладання — для розділів по черзі."""
+        if not self.history_running():
+            self.history = ftphistory.HistoryBuilder(self._ftp_connect, self.ftp_sections()).start()
+            applog.info("Збір історії FTP розпочато")
+
+    def stop_history(self):
+        if self.history is not None:
+            self.history.stop()
+
+    def history_running(self):
+        return self.history is not None and self.history.status["running"]
+
     def close_ftp(self):
         self._show_card(None)
         self._ready_for_next()
@@ -955,6 +969,7 @@ class RTubeApp(ctk.CTk, *_DND_BASES):
         for task in self.ftp_tasks.values():
             if task.state not in uploader.FINISHED:
                 self.uploads.cancel(task)       # недолитий .rtube-part докачається наступного разу
+        self.stop_history()                     # зібране збережеться, продовжиться наступного разу
         if self.manager.is_busy() or self.uploads.is_busy():
             # Скасування спрацює на наступному кроці yt-dlp, після чого
             # потік прибере .part і проміжні файли. Закрийся вікно одразу —
