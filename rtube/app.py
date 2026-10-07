@@ -35,7 +35,7 @@ from .uikit import FONT_SMALL, FONT_UI, FONT_UI_BOLD, GREEN, GREEN_HOVER
 from .video_card import VideoCard, load_thumbnail
 
 APP_TITLE = "R-TubeUA"
-APP_VERSION = "1.9.0"
+APP_VERSION = "1.9.1"
 
 DEFAULT_SIZE = (1000, 800)
 JOBS_MIN_HEIGHT = 170      # список — щонайменше два рядки, поки картка не відкрита
