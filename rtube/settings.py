@@ -58,6 +58,7 @@ DEFAULTS = {
     "notify_done": True,       # сповіщення Windows, коли все завантажено
     "taskbar_progress": True,  # прогрес на іконці в панелі задач
     "resume_queue": True,      # продовжувати незавершене після перезапуску
+    "auto_report": True,       # звіт xlsx сам, коли пакет завантажився
     "check_updates_on_start": True,  # при запуску питати про нову версію програми й yt-dlp
     "watch_clipboard": False,  # скопійоване посилання на YouTube саме йде на аналіз
     "app_bad": [],             # версії програми, що не пройшли самоперевірку
@@ -69,7 +70,7 @@ DEFAULTS = {
 # Службове (розмір вікна, стан оновлювача) сюди не входить.
 USER_KEYS = ("download_dir", "max_height", "container", "audio_container", "preferred_audio",
              "keep_original", "subs_mode", "theme", "notify_done", "taskbar_progress",
-             "resume_queue", "check_updates_on_start", "watch_clipboard")
+             "resume_queue", "auto_report", "check_updates_on_start", "watch_clipboard")
 
 _lock = threading.Lock()
 _cache = None

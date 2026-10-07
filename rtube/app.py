@@ -617,13 +617,21 @@ class RTubeApp(ctk.CTk, *_DND_BASES):
         self.jobs_panel.session.clear()
         done = sum(1 for j in session if j.state == "done")
         failed = sum(1 for j in session if j.state == "error")
-        if not (done or failed) or not settings.get("notify_done"):
+        if not (done or failed):
+            return
+        report_path = None
+        products = sum(1 + len(j.also_for) for j in session)
+        if settings.get("auto_report") and products >= 2:
+            report_path = self.jobs_panel.save_report(auto=True)
+        if not settings.get("notify_done"):
             return
         if self.focus_displayof() is not None and self.state() != "iconic":
             return
         text = f"Завантажено {done} відео" if done else "Нічого не завантажилось"
         if failed:
             text += f" · не вдалося {failed}"
+        if report_path:
+            text += f" · звіт {os.path.basename(report_path)}"
         notify.show(APP_TITLE, text)
 
     # ── налаштування ──────────────────────────────────────────────────────

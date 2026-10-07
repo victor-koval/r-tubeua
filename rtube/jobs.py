@@ -15,6 +15,18 @@ FINISHED = ("done", "error", "cancelled")
 # вікно на 7 секунд. Тож рядки є в завершених, поточного й лише найближчих у
 # черзі; решта — одним підписом «… і ще N у черзі», рядки з'являються по ходу.
 QUEUED_ROWS = 20
+# Фільтр списку: на пакеті в сотні рядків помилки шукати прокруткою незручно.
+FILTER_ALL, FILTER_FAILED, FILTER_ALREADY = "Усі", "Помилки", "Уже були"
+
+
+def filter_matches(job, kind):
+    """Чи показувати завдання за фільтром: «Помилки» — те саме, що бере
+    «↻ Невдалі»; «Уже були» — пропущені, бо файл уже лежав у теці."""
+    if kind == FILTER_FAILED:
+        return job.state in ("error", "cancelled")
+    if kind == FILTER_ALREADY:
+        return job.state == "done" and job.status == downloader.ALREADY_NOTE
+    return True
 
 
 def job_duration(job):
@@ -27,6 +39,14 @@ def _show(widget, visible, **grid):
     """grid / grid_remove лише при зміні: викликається з опитування 10 разів на секунду."""
     if visible and not widget.winfo_manager():
         widget.grid(row=0, padx=(0, 8), **grid)
+    elif not visible and widget.winfo_manager():
+        widget.grid_remove()
+
+
+def _show_at(widget, visible):
+    """Як _show, але віджет зберігає своє місце в сітці (grid_remove пам'ятає його)."""
+    if visible and not widget.winfo_manager():
+        widget.grid()
     elif not visible and widget.winfo_manager():
         widget.grid_remove()
 
@@ -225,6 +245,7 @@ class JobsPanel(uikit.Card):
         self.rows = {}                      # job.id → JobRow — не для всіх, див. _materialize
         self.session = set()                # id завдань від останнього «все порожньо»
         self.compact = False
+        self.filter = FILTER_ALL
 
         self.grid_rowconfigure(1, weight=1)
         # Заголовок і кнопки — двома рядками: в один на 880–1000 px кнопки
@@ -234,6 +255,14 @@ class JobsPanel(uikit.Card):
         head.grid_columnconfigure(0, weight=1)
         title = ctk.CTkFrame(head, fg_color="transparent")
         title.grid(row=0, column=0, sticky="w")
+        # Фільтр — праворуч у рядку заголовка: у рядку кнопок на 880 px не влазить.
+        self.seg_filter = ctk.CTkSegmentedButton(
+            head, values=[FILTER_ALL, FILTER_FAILED, FILTER_ALREADY], font=FONT_SMALL,
+            selected_color=GREEN, selected_hover_color=uikit.GREEN_HOVER,
+            command=self.set_filter)
+        self.seg_filter.set(FILTER_ALL)
+        self.seg_filter.grid(row=0, column=1, sticky="e")
+        self.seg_filter.grid_remove()
         self.lbl_jobs = ctk.CTkLabel(title, text="Завантаження", font=uikit.FONT_TITLE, anchor="w")
         self.lbl_jobs.pack(side="left")
         # Сума тривалостей завершених відео — клік копіює «12,34» (хвилин,секунд).
@@ -350,13 +379,22 @@ class JobsPanel(uikit.Card):
                     row.destroy()
         self._materialize()
 
+    def set_filter(self, kind):
+        if kind == self.filter:
+            return
+        self.filter = kind
+        self.seg_filter.set(kind)
+        self._regrid_rows()
+
     # ── звіт ──
-    def save_report(self):
-        """Звіт xlsx по всьому, що зараз у списку, — у теку з відео."""
+    def save_report(self, auto=False):
+        """Звіт xlsx по всьому, що зараз у списку, — у теку з відео. Повертає
+        шлях або None. auto — сам по завершенні пакета: без Провідника, щоб не
+        красти фокус."""
         jobs = sorted(self.jobs.values(), key=lambda j: j.id)
         if not jobs:
             self.app.hint("Список завантажень порожній — звітувати нема про що", uikit.STATE_WARN)
-            return
+            return None
         dirs = {j.out_dir for j in jobs}
         out_dir = dirs.pop() if len(dirs) == 1 else self.app.dir_var.get()
         items = report_items(jobs)
@@ -366,15 +404,19 @@ class JobsPanel(uikit.Card):
         except PermissionError:
             self.app.hint(f"{os.path.basename(path)} відкритий в Excel — закрийте й спробуйте "
                           "ще раз", uikit.STATE_ERROR)
-            return
+            return None
         except Exception as exc:
             applog.error(f"Звіт {path} не записався", exc)
             self.app.hint(f"Звіт не записався: {exc}"[:220], uikit.STATE_ERROR)
-            return
-        applog.info(f"Звіт: {path} ({len(items)} рядків)")
+            return None
+        applog.info(f"Звіт: {path} ({len(items)} рядків){' — сам після пакета' if auto else ''}")
+        if auto:
+            self.app.hint(f"Пакет завантажено, звіт збережено: {path}", uikit.STATE_OK)
+            return path
         self.app.hint(f"Звіт збережено: {path}", uikit.STATE_OK)
         if not uikit.select_in_explorer(path):
             uikit.open_path(out_dir)
+        return path
 
     # ── рядки ──
     def _materialize(self, force=()):
@@ -404,15 +446,21 @@ class JobsPanel(uikit.Card):
             parts.append(f"скасовано без рядка: {len(hidden) - waiting} (є у звіті)")
         # Підпис про приховані — одразу під видимою чергою (це її продовження),
         # завершені — нижче.
-        widgets = [r for r in order if r.job.state in ACTIVE]
-        if parts:
+        filtering = self.filter != FILTER_ALL
+        widgets = [] if filtering else [r for r in order if r.job.state in ACTIVE]
+        if parts and not filtering:
             self.lbl_more.configure(text="  ·  ".join(parts))
             widgets.append(self.lbl_more)
         else:
             self.lbl_more.grid_remove()
-        widgets += [r for r in order if r.job.state not in ACTIVE]
+        widgets += [r for r in order if r.job.state not in ACTIVE
+                    and filter_matches(r.job, self.filter)]
+        shown = set(map(id, widgets))
+        for row in order:
+            if id(row) not in shown and row.winfo_manager():
+                row.grid_remove()
         for i, widget in enumerate(widgets, start=1):
-            if widget.grid_info().get("row") != i:
+            if not widget.winfo_manager() or widget.grid_info().get("row") != i:
                 if widget is self.lbl_more:
                     widget.grid(row=i, column=0, pady=(2, 6))
                 else:
@@ -473,6 +521,7 @@ class JobsPanel(uikit.Card):
             self.buttons.grid_remove()
         if failed:
             self.btn_retry_failed.configure(text=f"↻ Невдалі ({failed})")
+        self._refresh_filter(failed)
         if active:
             state = "пауза" if paused else "у роботі"
             self.lbl_jobs.configure(text=f"Завантаження · {state} {len(active)}")
@@ -480,6 +529,14 @@ class JobsPanel(uikit.Card):
             self.lbl_jobs.configure(text="Завантаження · пауза" if paused else "Завантаження")
         self._update_total()
         return active
+
+    def _refresh_filter(self, failed):
+        """Фільтр видно, коли є що відфільтрувати; спорожніла категорія
+        (напр., після «↻ Невдалі») — назад до «Усі»."""
+        already = any(filter_matches(j, FILTER_ALREADY) for j in self.jobs.values())
+        _show_at(self.seg_filter, bool(failed or already))
+        if self.filter == FILTER_FAILED and not failed or                 self.filter == FILTER_ALREADY and not already:
+            self.set_filter(FILTER_ALL)
 
     def _update_total(self):
         """«Завершено: 4 · ⏱ 12,34» — лише ті, що зараз у списку: «Прибрати
