@@ -7,12 +7,13 @@
 
 import os
 import threading
+import time
 import tkinter
 from tkinter import filedialog, messagebox
 
 import customtkinter as ctk
 
-from . import applog, appupdate, settings, uikit, ytupdate
+from . import applog, appupdate, ftpstate, settings, uikit, uploader, ytupdate
 from .uikit import FONT_SMALL, FONT_UI, FONT_UI_BOLD, GREEN, GREEN_HOVER
 
 QUALITY_OPTIONS = [("Найкраща доступна", 0), ("2160p (4K)", 2160), ("1440p", 1440),
@@ -38,13 +39,15 @@ def _value_for(options, label):
 class SettingsDialog(ctk.CTkToplevel):
     """on_change(key, value) — щоб вікно одразу застосовувало тему, панель задач тощо."""
 
-    def __init__(self, master, on_change):
+    def __init__(self, master, on_change, focus=None):
         super().__init__(master)
         # Ховаємо до кінця побудови: CTkToplevel показує себе за 5 мс, і
         # було видно недобудоване вікно 686×220 не на своєму місці, яке
         # потім розросталось до повного й переїжджало. Покаже _show().
         self.withdraw()
         self.on_change = on_change
+        self._focus = focus             # розділ, до якого прокрутити при відкритті ("ftp")
+        self._cards = {}
         self.title("Налаштування — R-TubeUA")
         self.configure(fg_color=uikit.SURFACE_SUNKEN)
         # Не self.resizable(): у CTkToplevel він ще раз ховає й показує вікно,
@@ -64,6 +67,7 @@ class SettingsDialog(ctk.CTkToplevel):
         row = 0
         row = self._section(row, "Завантаження", self._build_downloads)
         row = self._section(row, "Робота у фоні", self._build_background)
+        row = self._section(row, "Заливання на FTP", self._build_ftp)
         row = self._section(row, "Оновлення", self._build_updates)
         row = self._section(row, "Вигляд", self._build_look)
 
@@ -127,8 +131,10 @@ class SettingsDialog(ctk.CTkToplevel):
             self.focus_set()
         except Exception:
             pass
-        if self.updates_pending():
-            self.after(50, self._scroll_to_updates)
+        if self._focus in self._cards:
+            self.after(50, lambda: self._scroll_to(self._cards[self._focus]))
+        elif self.updates_pending():
+            self.after(50, lambda: self._scroll_to(self._updates_card))
 
     # ── побудова ──
     def _section(self, row, title, builder):
@@ -206,6 +212,114 @@ class SettingsDialog(ctk.CTkToplevel):
         self._check(body, row, "Зберігати звіт, коли пакет завантажено", "auto_report",
                     "xlsx у теці з відео — як кнопка «📊 Звіт». Лише для пакетів "
                     "(від двох товарів), не для одного відео.")
+
+    def _build_ftp(self, body):
+        self._cards["ftp"] = body.master
+        login = self.master.ftp_login
+        self.ftp_host = ctk.StringVar(value=login.get("host", ""))
+        self.ftp_user = ctk.StringVar(value=login.get("user", ""))
+        self.ftp_pass = ctk.StringVar(value=login.get("password", ""))
+        self.ftp_remember = ctk.BooleanVar(value=bool(settings.get("ftp_remember")))
+        for row, (text, var, extra) in enumerate((
+                ("Сервер", self.ftp_host, {"placeholder_text": "адреса або адреса:порт"}),
+                ("Логін", self.ftp_user, {}),
+                ("Пароль", self.ftp_pass, {"show": "•"}))):
+            self._label(body, row, text)
+            entry = ctk.CTkEntry(body, textvariable=var, width=300, font=FONT_UI, **extra)
+            entry.grid(row=row, column=1, sticky="w", pady=4)
+            var.trace_add("write", lambda *_: self._apply_ftp(persist=False))
+        ctk.CTkCheckBox(body, text="Запам'ятати вхід", variable=self.ftp_remember, font=FONT_UI,
+                        command=lambda: self._apply_ftp(persist=True)).grid(
+            row=3, column=0, columnspan=2, sticky="w", pady=(6, 0))
+        ctk.CTkLabel(body, text="Без цього сервер, логін і пароль живуть лише до закриття програми. "
+                                "Пароль зберігається в Диспетчері облікових даних Windows, "
+                                "не у файлах програми.",
+                     font=FONT_SMALL, text_color=uikit.TEXT_MUTED, anchor="w", justify="left",
+                     wraplength=520).grid(row=4, column=0, columnspan=2, sticky="w",
+                                          padx=(30, 0), pady=(0, 4))
+        self._label(body, 5, "Розділи по черзі")
+        self.ftp_sections = ctk.StringVar(value=settings.get("ftp_sections"))
+        ctk.CTkEntry(body, textvariable=self.ftp_sections, width=300, font=FONT_UI).grid(
+            row=5, column=1, sticky="w", pady=4)
+        self.ftp_sections.trace_add(
+            "write", lambda *_: settings.set_many(ftp_sections=self.ftp_sections.get()))
+        ctk.CTkLabel(body, text="Коли розділ забитий («недостатньо місця»), файл іде в "
+                                "наступний. У корінь розділу програма не кладе нічого.",
+                     font=FONT_SMALL, text_color=uikit.TEXT_MUTED, anchor="w", justify="left",
+                     wraplength=520).grid(row=6, column=0, columnspan=2, sticky="w", pady=(0, 4))
+        line = ctk.CTkFrame(body, fg_color="transparent")
+        line.grid(row=7, column=0, columnspan=2, sticky="w", pady=(6, 0))
+        self.btn_ftp_check = uikit.SecondaryButton(line, text="Перевірити й прочитати теки",
+                                                   width=210, command=self._check_ftp)
+        self.btn_ftp_check.pack(side="left")
+        self.lbl_ftp = ctk.CTkLabel(line, text=self._ftp_text(), font=FONT_SMALL,
+                                    text_color=uikit.TEXT_MUTED)
+        self.lbl_ftp.pack(side="left", padx=(12, 0))
+
+    def _ftp_text(self):
+        age = ftpstate.tree_age()
+        if not age:
+            return "теки ще не читались"
+        sections = [s for s in self.master.ftp_sections() if ftpstate.tree(s) is not None]
+        return (f"теки прочитано {time.strftime('%d.%m %H:%M', time.localtime(age))}"
+                f" · {', '.join(sections)}")
+
+    def _apply_ftp(self, persist):
+        self.master.set_ftp_login(self.ftp_host.get(), self.ftp_user.get(), self.ftp_pass.get(),
+                                  bool(self.ftp_remember.get()), persist=persist)
+
+    def _check_ftp(self):
+        """Вхід і читання дерева тек — нічого на сервері не змінює."""
+        self._apply_ftp(persist=True)
+        if not self.master.ftp_ready():
+            self.lbl_ftp.configure(text="вкажіть сервер, логін і пароль", text_color=uikit.STATE_WARN)
+            return
+        self.btn_ftp_check.configure(state="disabled", text="Читаю теки…")
+        sections = self.master.ftp_sections()
+        result = {}
+
+        def work():
+            try:
+                client = self.master._ftp_connect()
+                try:
+                    result["kind"] = client.kind
+                    result["tree"] = client.read_tree(sections)
+                finally:
+                    client.close()
+                ftpstate.save_tree(result["tree"])
+            except Exception as exc:
+                applog.error("Перевірка FTP не вдалася", exc)
+                result["error"] = uploader.human_error(exc)
+
+        thread = threading.Thread(target=work, daemon=True)
+        thread.start()
+        self._wait_ftp(thread, result)
+
+    def _wait_ftp(self, thread, result):
+        if thread.is_alive():
+            self.after(300, lambda: self._wait_ftp(thread, result))
+            return
+        if not self.winfo_exists():
+            return
+        self.btn_ftp_check.configure(state="normal", text="Перевірити й прочитати теки")
+        if result.get("error"):
+            self.lbl_ftp.configure(text=result["error"][:80], text_color=uikit.STATE_ERROR)
+            return
+        tree = result["tree"]
+        count = sum(len(p) for p in tree.values())
+        missing = [s for s, p in tree.items() if not p]
+        text = f"підключено ({result['kind']}) · тек: {count}"
+        if missing:
+            text += f" · порожні чи немає: {', '.join(missing)}"
+        self.lbl_ftp.configure(text=text, text_color=uikit.STATE_WARN if missing else uikit.STATE_OK)
+
+    def destroy(self):
+        if hasattr(self, "ftp_host"):
+            try:
+                self._apply_ftp(persist=True)       # пароль зберігаємо раз, при закритті
+            except Exception as exc:
+                applog.error("Вхід FTP не збережено", exc)
+        super().destroy()
 
     def _build_updates(self, body):
         row = self._check(body, 0, "Перевіряти оновлення при запуску програми",
@@ -348,13 +462,13 @@ class SettingsDialog(ctk.CTkToplevel):
         self.destroy()
         app.after_idle(app.restart)
 
-    def _scroll_to_updates(self):
-        """Готове оновлення — одразу видно кнопку, навіть на низькому екрані."""
+    def _scroll_to(self, card):
+        """Прокрутити до картки: готове оновлення, вхід на FTP — видно одразу."""
         try:
             self.update_idletasks()
             # Сам CTkScrollableFrame — внутрішня рамка в canvas, заввишки з увесь вміст.
             height = self.body.winfo_height() or 1
-            self.body._parent_canvas.yview_moveto(self._updates_card.winfo_y() / height)
+            self.body._parent_canvas.yview_moveto(card.winfo_y() / height)
         except Exception:
             pass
 
@@ -370,6 +484,7 @@ class SettingsDialog(ctk.CTkToplevel):
         for key in settings.USER_KEYS:
             self.on_change(key, settings.get(key))
         self.dir_var.set(settings.get("download_dir"))
+        self.ftp_sections.set(settings.get("ftp_sections"))
         for key, (widget, options) in self._vars.items():
             value = settings.get(key)
             if options is not None:

@@ -137,7 +137,7 @@ class UploadManager:
                     self._upload(task)
             except Exception as exc:
                 applog.error(f"FTP: {task.name} — {kind} не вдався", exc)
-                task.state, task.note = ERROR, _human(exc)
+                task.state, task.note = ERROR, human_error(exc)
             finally:
                 self.running = None
                 self._emit(task)
@@ -263,7 +263,7 @@ class UploadManager:
             return
 
 
-def _human(exc):
+def human_error(exc):
     text = str(exc)
     low = text.lower()
     if "530" in low or "login" in low and "fail" in low:

@@ -16,7 +16,7 @@ SCRIPT = r"""
 import json, os, sys, tempfile
 from unittest import mock
 sys.path.insert(0, os.getcwd())
-from rtube import app, appupdate, formats, settings, tools
+from rtube import app, appupdate, credentials, formats, settings, tools
 
 tmp = tempfile.mkdtemp()
 real_get = settings.get
@@ -26,6 +26,11 @@ settings_get = mock.patch.object(settings, "get", side_effect=lambda k: False if
                                  else (tmp if k == "download_dir" else real_get(k)))
 settings_set = mock.patch.object(settings, "set_many")
 settings_get.start(); settings_set.start()
+# Справжній Диспетчер облікових даних не чіпаємо: закриття Налаштувань без
+# «Запам'ятати» видаляє збережений пароль FTP.
+for _name in ("save", "delete"):
+    mock.patch.object(credentials, _name).start()
+mock.patch.object(credentials, "load", return_value=None).start()
 # На сервері CI немає ffmpeg — «Завантажити» спитало б, чи його поставити.
 mock.patch.object(tools, "find_ffmpeg", return_value="ffmpeg.exe").start()
 # Несподіване вікно-питання без людини поруч висіло б до тайм-ауту — хай
@@ -175,6 +180,73 @@ with mock.patch.object(a, "restart") as restart:
     d.btn_restart.invoke(); pump()
     check(restart.called and not d.winfo_exists(), "кнопка перезапускає й закриває вікно")
 appupdate.state.update(version=None, path=None)
+
+# FTP: план → заливання на фальшивий сервер → стан у рядку; вибір теки вручну
+import time
+from rtube import downloader, ftpclient, ftpstate, uploader
+from tests.fakeftp import Server
+server = Server(dirs=["/video/odyag_vzuttya_ta_aksesuari/odyag", "/video/krasa_ta_zdorovya/apteka"])
+hoodie = {"crumbs_ua": ["Одяг, взуття та аксесуари", "Одяг", "Чоловічі худі"], "crumbs_ru": [],
+          "slugs": [], "mpath": ["1162030", "2033137", "4637959"]}
+a.ftp_login = {"host": "h", "user": "u", "password": "secret"}
+a.uploads = uploader.UploadManager(
+    lambda: ftpclient.FtpClient("h", "u", "secret", factory=server.connect).connect(),
+    lambda: ["video"], product_info={"590312170": hoodie}.get)
+files = []
+for pid in ("590312170", "111"):
+    path = os.path.join(tmp, pid + ".mp4")
+    with open(path, "wb") as f:
+        f.write(os.urandom(40000))
+    job = downloader.Job(url=f"https://youtu.be/x{pid}", title=pid, out_dir=tmp, product_id=pid)
+    p.enqueue([job])
+    job.state, job.filepath = "done", path
+    m._emit("state", job, "done", "Готово")
+    files.append(job)
+pump()
+check("(2)" in p.btn_ftp.cget("text"), "кнопка «На FTP (2)»")
+
+def until(cond, what, timeout=10):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        pump()
+        if cond():
+            return
+        time.sleep(0.05)
+    print("FAIL:", what); sys.exit(1)
+
+a.open_ftp(); pump()
+card = a.ftp_card
+check(card.winfo_manager(), "картка FTP показана")
+tasks = {t.product_id: t for t in card.tasks}
+until(lambda: not a.uploads.is_busy() and tasks["590312170"].state == uploader.PLANNED,
+      "худі — тека визначена")
+check(tasks["590312170"].folder == "video/odyag_vzuttya_ta_aksesuari/odyag", "тека для худі")
+check(tasks["111"].state == uploader.NEED_CHOICE, "невідомий товар — «оберіть теку»")
+check("(1)" in card.btn_upload.cget("text"), "кнопка «Залити на FTP (1)»")
+
+# вибір теки вручну для невідомого
+tasks["111"].mpath = ["777"]
+from rtube.ftp_card import FolderPicker
+picker = FolderPicker(card, tasks["111"], ["video"], card._chosen); pump()
+picker.tree.selection_set("krasa_ta_zdorovyaapteka")
+picker._ok()
+until(lambda: not a.uploads.is_busy() and tasks["111"].state == uploader.PLANNED, "обрана тека")
+check(ftpstate.rules("video").get("777") == ["krasa_ta_zdorovya", "apteka"], "вибір запам'ятався")
+
+card.upload()
+until(lambda: not a.uploads.is_busy() and all(t.state == uploader.UPLOADED for t in tasks.values()),
+      "обидва залито")
+check("/video/odyag_vzuttya_ta_aksesuari/odyag/590312170.mp4" in server.files, "файл на FTP")
+row = p.rows[files[0].id]
+check(row.lbl_ftp.winfo_manager() and "залито" in row.lbl_ftp.cget("text"), "стан FTP у рядку")
+check(not p.btn_ftp.winfo_manager(), "усе залито — кнопки «На FTP» немає")
+a.close_ftp(); pump()
+
+# Налаштування відкриваються на розділі FTP
+a.open_settings(section="ftp"); pump()
+d = a._settings_window
+check(d.ftp_user.get() == "u", "вхід FTP у Налаштуваннях")
+d.destroy(); pump()
 
 a.on_closing(force=True)
 print("OK")

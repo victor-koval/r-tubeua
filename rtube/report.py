@@ -19,7 +19,7 @@ from openpyxl.utils import get_column_letter
 from .uikit import format_min_sec, whole_seconds
 
 HEADERS = ("№", "ID товару", "Посилання", "Назва", "Файл", "Статус", "Деталі",
-           "Тривалість", "Розмір, МБ")
+           "Тривалість", "Розмір, МБ", "На FTP")
 MAX_WIDTH = 60
 
 ALREADY_NOTE = "Уже є в теці"     # початок downloader.ALREADY_NOTE
@@ -84,7 +84,8 @@ def default_name(now=None):
 
 def write_report(path, items):
     """items — словники з ключами product_id, url, title, filepath, state,
-    text, duration (секунди або None). Повертає path."""
+    text, duration (секунди або None), ftp (шлях на FTP або стан заливання).
+    Повертає path."""
     wb = Workbook()
     ws = wb.active
     ws.title = "Звіт"
@@ -113,6 +114,7 @@ def write_report(path, items):
             details(item, groups),
             format_min_sec(duration) if duration else "",
             size,
+            item.get("ftp") or "",
         ])
         group = groups.get(_key(item))
         if group is not None:

@@ -22,9 +22,11 @@ except Exception:
     TkinterDnD = None
     _DND_BASES = ()
 
-from . import (applog, appupdate, downloader, ffinstall, formats, notify, queuestore, settings,
+from . import (applog, appupdate, credentials, downloader, ffinstall, formats, ftpclient,
+               ftpstate, notify, queuestore, settings, uploader,
                sheets, taskbar, tools, uikit, watchdog, ytupdate)
 from .batch import BatchCard, plural
+from .ftp_card import STATE_TEXT as FTP_STATE_TEXT, FtpCard
 from .jobs import FINISHED, JobsPanel
 from .statusbar import StatusBar
 from .uikit import FONT_SMALL, FONT_UI, FONT_UI_BOLD, GREEN, GREEN_HOVER
@@ -63,6 +65,12 @@ class RTubeApp(ctk.CTk, *_DND_BASES):
 
         self.manager = downloader.DownloadManager(done_files=queuestore.load_done(),
                                                   on_done=queuestore.save_done)
+        # FTP: вхід — у пам'яті; з «Запам'ятати» — сервер і логін у налаштуваннях,
+        # пароль у Диспетчері облікових даних Windows.
+        self.ftp_login = self._load_ftp_login()
+        self.uploads = uploader.UploadManager(self._ftp_connect, self.ftp_sections)
+        self.ftp_tasks = {}                  # task.id → UploadTask
+        self.ftp_by_job = {}                 # job.id → UploadTask
         self.ui_events = queue.Queue()     # результати аналізу з фонових потоків
         self.dir_var = ctk.StringVar(value=settings.get("download_dir"))
         self._analyze_token = 0
@@ -85,6 +93,7 @@ class RTubeApp(ctk.CTk, *_DND_BASES):
         self._build_url_card()
         self.video_card = VideoCard(self, self)
         self.batch_card = BatchCard(self, self)
+        self.ftp_card = FtpCard(self, self)
         self.jobs_panel = JobsPanel(self, self)
         self.jobs_panel.grid(row=3, column=0, sticky="nsew", padx=22, pady=(0, 10))
         self.statusbar = StatusBar(self, self)
@@ -459,33 +468,34 @@ class RTubeApp(ctk.CTk, *_DND_BASES):
         """Одна картка (відео чи пакета) або жодної. Поки картка відкрита,
         список завантажень згорнутий до заголовка — інакше на невисокому
         вікні картка не вміщалась і кнопка «Завантажити» зникала за краєм."""
-        for other in (self.video_card, self.batch_card):
+        for other in (self.video_card, self.batch_card, self.ftp_card):
             if other is not card:
                 other.grid_remove()
         if card is not None:
             card.grid(row=2, column=0, sticky="ew", padx=22, pady=(0, 10))
         self.jobs_panel.set_compact(card is not None)
         self.grid_rowconfigure(3, minsize=0 if card is not None else JOBS_MIN_HEIGHT)
-        if card is self.batch_card:
+        if card in (self.batch_card, self.ftp_card):
             self.after_idle(self._fit_cards)
 
     def _fit_cards(self):
-        """Таблиця пакета — стільки рядків, скільки влазить у вікно."""
-        if not self.batch_card.winfo_manager():
+        """Таблиця пакета (чи плану FTP) — стільки рядків, скільки влазить у вікно."""
+        card = next((c for c in (self.batch_card, self.ftp_card) if c.winfo_manager()), None)
+        if card is None:
             return
         self.update_idletasks()
-        tree = self.batch_card.tree
+        tree = card.tree
         row_px = 24
         shown = int(tree.cget("height"))
         heading = max(0, tree.winfo_reqheight() - shown * row_px)
         others = sum(w.winfo_reqheight() for w in (self._header, self._url_card, self.jobs_panel,
                                                     self.statusbar))
         paddings = 28 + 10 + 10 + 8 + 12
-        card_fixed = self.batch_card.winfo_reqheight() - tree.winfo_reqheight()
+        card_fixed = card.winfo_reqheight() - tree.winfo_reqheight()
         free = self.winfo_height() - others - paddings - card_fixed - heading
         rows = free // row_px
         if rows != shown or rows < len(tree.get_children()):
-            self.batch_card.fit(rows)
+            card.fit(rows)
 
     def _ready_for_next(self):
         self.ent_url.delete(0, "end")
@@ -635,18 +645,172 @@ class RTubeApp(ctk.CTk, *_DND_BASES):
             text += f" · звіт {os.path.basename(report_path)}"
         notify.show(APP_TITLE, text)
 
+    # ── FTP ───────────────────────────────────────────────────────────────
+    def _load_ftp_login(self):
+        login = {"host": "", "user": "", "password": ""}
+        if not settings.get("ftp_remember"):
+            return login
+        login.update(host=settings.get("ftp_host") or "", user=settings.get("ftp_user") or "")
+        try:
+            saved = credentials.load()
+            if saved:
+                login["user"] = login["user"] or saved[0]
+                login["password"] = saved[1]
+        except OSError as exc:
+            applog.warning(f"Пароль FTP не прочитано з Диспетчера облікових даних: {exc}")
+        return login
+
+    def set_ftp_login(self, host, user, password, remember, persist=True):
+        """Вхід на FTP з Налаштувань. persist — записати (а не лише в пам'ять)."""
+        self.ftp_login = {"host": host.strip(), "user": user.strip(), "password": password}
+        if not persist:
+            return
+        try:
+            if remember:
+                settings.set_many(ftp_remember=True, ftp_host=host.strip(), ftp_user=user.strip())
+                if password:
+                    credentials.save(user.strip(), password)
+            else:
+                settings.set_many(ftp_remember=False, ftp_host="", ftp_user="")
+                credentials.delete()
+        except OSError as exc:
+            applog.error("Вхід FTP не збережено", exc)
+
+    def ftp_ready(self):
+        return all(self.ftp_login.get(k) for k in ("host", "user", "password"))
+
+    def ftp_sections(self):
+        raw = settings.get("ftp_sections") or ""
+        return [s.strip().strip("/") for s in raw.replace(";", ",").split(",") if s.strip()]
+
+    def uploads_section(self):
+        """Поточний розділ — перший незабитий."""
+        full = self.uploads.full_sections()
+        return next((s for s in self.ftp_sections() if s not in full), "")
+
+    def _ftp_connect(self):
+        """З потоку заливання: підключений FtpClient."""
+        login = dict(self.ftp_login)
+        host, _, port = login["host"].partition(":")
+        return ftpclient.FtpClient(host, login["user"], login["password"],
+                                   port=int(port) if port.isdigit() else 21).connect()
+
+    def open_ftp(self):
+        """«↑ На FTP»: план для готових файлів із ID товару."""
+        if not self.ftp_ready():
+            self.hint("Вкажіть сервер, логін і пароль FTP у Налаштуваннях", uikit.STATE_WARN)
+            self.open_settings(section="ftp")
+            return
+        tasks, new = [], []
+        for job in self.jobs_panel.ftp_jobs():
+            task = self.ftp_by_job.get(job.id)
+            if task is None or task.local != job.filepath:
+                task = uploader.UploadTask(job.filepath, job.product_id, job_id=job.id)
+                self.ftp_tasks[task.id] = task
+                self.ftp_by_job[job.id] = task
+                new.append(task)
+            elif task.state == uploader.ERROR:
+                new.append(task)        # помилка плану (зв'язок, пароль) — ще раз
+            tasks.append(task)
+        if not tasks:
+            self.hint("Немає готових файлів з ID товару, які ще не на FTP", uikit.STATE_WARN)
+            return
+        self.video_card.clear()
+        self.ftp_card.show(tasks)
+        self._show_card(self.ftp_card)
+        if new:
+            self.uploads.plan(new)
+        self.hint("Перевірте теки й натисніть «Залити на FTP»", uikit.STATE_OK)
+
+    def close_ftp(self):
+        self._show_card(None)
+        self._ready_for_next()
+
+    def start_upload(self, tasks):
+        self.uploads.upload(tasks)
+        for task in tasks:
+            self._ftp_to_job(task)
+
+    def refresh_ftp_tree(self):
+        """Перечитати теки розділів (у фоні) і заново визначити ще не залиті."""
+        if not self.ftp_ready():
+            self.open_settings(section="ftp")
+            return
+        sections = self.ftp_sections()
+
+        def work():
+            try:
+                client = self._ftp_connect()
+                try:
+                    tree = client.read_tree(sections)
+                finally:
+                    client.close()
+                ftpstate.save_tree(tree)
+                self.ui_events.put(("ftp_tree", sum(len(p) for p in tree.values()), None))
+            except Exception as exc:
+                applog.error("Дерево тек FTP не прочиталось", exc)
+                self.ui_events.put(("ftp_tree", None, uploader.human_error(exc)))
+
+        self.hint("Читаю теки на FTP…", uikit.STATE_INFO)
+        threading.Thread(target=work, daemon=True).start()
+
+    def _ftp_tree_read(self, count, error):
+        if error:
+            self.hint(f"Теки FTP не прочитано: {error}", uikit.STATE_ERROR)
+            return
+        self.hint(f"Теки FTP оновлено: {count}", uikit.STATE_OK)
+        again = [t for t in self.ftp_card.tasks if t.state in
+                 (uploader.PLANNED, uploader.NEED_CHOICE, uploader.ERROR)
+                 and t.source != "rule"]
+        if again:
+            self.uploads.plan(again)
+
+    def _ftp_to_job(self, task):
+        """Стан заливання — у рядок завдання (лише коли заливання почалось)."""
+        job = self.jobs_panel.jobs.get(task.job_id)
+        if job is None or task.state in (uploader.PLANNING, uploader.PLANNED,
+                                         uploader.NEED_CHOICE, uploader.CONFIRM):
+            return
+        text = FTP_STATE_TEXT.get(task.state, task.state)
+        if task.state == uploader.UPLOADING and task.fraction:
+            text = f"заливаю… {task.fraction * 100:.0f}%"
+        if task.state in (uploader.UPLOADED, uploader.ALREADY) and task.ftp_path:
+            text += f" — {task.ftp_path}"
+        elif task.state == uploader.ERROR and task.note:
+            text = task.note
+        elif task.folder and task.state in (uploader.QUEUED, uploader.UPLOADING):
+            text += f" → {task.folder}"
+        self.jobs_panel.set_ftp(job, task.state, text, task.ftp_path)
+
+    def _drain_uploads(self):
+        changed = {}
+        try:
+            for _ in range(500):
+                _kind, task_id, _payload = self.uploads.events.get_nowait()
+                task = self.ftp_tasks.get(task_id)
+                if task is not None:
+                    changed[task_id] = task
+        except queue.Empty:
+            pass
+        for task in changed.values():
+            if self.ftp_card.winfo_manager():
+                self.ftp_card.update_task(task)
+            self._ftp_to_job(task)
+
     # ── налаштування ──────────────────────────────────────────────────────
-    def open_settings(self):
+    def open_settings(self, section=None):
+        """section — розділ, до якого прокрутити (напр. "ftp")."""
         if self._settings_window is not None and self._settings_window.winfo_exists():
             self._settings_window.focus_set()
             return
         from .settings_dialog import SettingsDialog
-        self._settings_window = SettingsDialog(self, self._on_setting_changed)
+        self._settings_window = SettingsDialog(self, self._on_setting_changed, focus=section)
 
     def _on_setting_changed(self, key, value):
         if key == "theme":
             ctk.set_appearance_mode(THEMES.get(value, "Dark"))
             self.batch_card.apply_style()
+            self.ftp_card.apply_style()
         elif key == "download_dir":
             self.dir_var.set(settings.get("download_dir"))
         elif key == "taskbar_progress" and not value and self.taskbar:
@@ -711,9 +875,12 @@ class RTubeApp(ctk.CTk, *_DND_BASES):
                 elif kind == "app_ready":
                     self.statusbar.show_update_ready()
                     self.show_update_badge()
+                elif kind == "ftp_tree":
+                    self._ftp_tree_read(event[1], event[2])
         except queue.Empty:
             pass
 
+        self._drain_uploads()
         changed, error = self.jobs_panel.handle_events()
         if changed:
             self._queue_dirty = True
@@ -785,7 +952,10 @@ class RTubeApp(ctk.CTk, *_DND_BASES):
         for job in sorted(active, key=lambda j: j.state == "running"):
             # З resume — лишаємо .part, щоб докачати після запуску.
             self.manager.cancel(job, keep_partial=resume)
-        if self.manager.is_busy():
+        for task in self.ftp_tasks.values():
+            if task.state not in uploader.FINISHED:
+                self.uploads.cancel(task)       # недолитий .rtube-part докачається наступного разу
+        if self.manager.is_busy() or self.uploads.is_busy():
             # Скасування спрацює на наступному кроці yt-dlp, після чого
             # потік прибере .part і проміжні файли. Закрийся вікно одразу —
             # потік загинув би разом із процесом і сміття лишилося б у теці.
@@ -795,11 +965,13 @@ class RTubeApp(ctk.CTk, *_DND_BASES):
         self._close_now()
 
     def _wait_and_close(self, deadline):
-        if self.manager.is_busy() and time.monotonic() < deadline:
+        busy = self.manager.is_busy() or self.uploads.is_busy()
+        if busy and time.monotonic() < deadline:
             self.after(200, lambda: self._wait_and_close(deadline))
             return
-        if self.manager.is_busy():
-            applog.warning("Завантаження не зупинилось за відведений час — закриваю як є")
+        if busy:
+            applog.warning("Завантаження чи заливання не зупинилось за відведений час — "
+                           "закриваю як є")
         self._close_now()
 
     def _close_now(self):

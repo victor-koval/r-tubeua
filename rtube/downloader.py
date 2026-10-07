@@ -334,6 +334,10 @@ class Job:
     filepath: str = ""
     keep_partial: bool = False      # при скасуванні лишити .part, щоб докачати потім
     pause_requested: bool = False   # «скасування» від паузи: повернути в чергу, а не скасовувати
+    # Заливання на FTP (uploader): стан завдання заливання й куди залито.
+    ftp_state: str = ""
+    ftp_path: str = ""
+    ftp_note: str = ""
     cancel_event: threading.Event = field(default_factory=threading.Event)
 
     @property

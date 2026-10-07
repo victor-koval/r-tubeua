@@ -17,6 +17,25 @@ FINISHED = ("done", "error", "cancelled")
 QUEUED_ROWS = 20
 # Фільтр списку: на пакеті в сотні рядків помилки шукати прокруткою незручно.
 FILTER_ALL, FILTER_FAILED, FILTER_ALREADY = "Усі", "Помилки", "Уже були"
+FILTER_NOT_UPLOADED = "Не на FTP"
+FTP_DONE = ("uploaded", "already")      # uploader: залито / уже було на FTP
+
+
+def ftp_candidate(job):
+    """Чи можна (і чи ще треба) залити файл цього завдання на FTP: готовий файл
+    з ID товару, свій (а не посилання на файл іншого товару), ще не залитий."""
+    return (job.state == "done" and bool(job.product_id) and bool(job.filepath)
+            and not job.status.startswith(downloader.SAME_VIDEO)
+            and job.ftp_state not in FTP_DONE and os.path.isfile(job.filepath))
+
+
+def ftp_text(job):
+    """Що писати про FTP у звіті."""
+    if job.ftp_path:
+        return job.ftp_path
+    if job.ftp_state == "error":
+        return f"Помилка: {job.ftp_note}"
+    return ""
 
 
 def filter_matches(job, kind):
@@ -26,6 +45,8 @@ def filter_matches(job, kind):
         return job.state in ("error", "cancelled")
     if kind == FILTER_ALREADY:
         return job.state == "done" and job.status == downloader.ALREADY_NOTE
+    if kind == FILTER_NOT_UPLOADED:
+        return ftp_candidate(job)
     return True
 
 
@@ -77,7 +98,8 @@ def report_items(jobs):
     в завдання з тим самим відео (also_for): їм дістається його файл і стан."""
     items = []
     for job in sorted(jobs, key=lambda j: j.id):
-        base = {"url": job.url, "title": job.title, "duration": job_duration(job)}
+        base = {"url": job.url, "title": job.title, "duration": job_duration(job),
+                "ftp": ftp_text(job)}
         items.append(dict(base, product_id=job.product_id, filepath=job.filepath,
                           state=job.state, text=job.status))
         for pid in job.also_for:
@@ -134,9 +156,12 @@ class JobRow(ctk.CTkFrame):
         self.lbl_status = ctk.CTkLabel(self, text="У черзі", font=FONT_SMALL, anchor="w",
                                        text_color=uikit.TEXT_MUTED)
         self.lbl_status.grid(row=3, column=0, sticky="ew", padx=(12, 8), pady=(0, 8))
+        # Заливання на FTP — окремим рядком під станом завантаження, коли почалось.
+        self.lbl_ftp = ctk.CTkLabel(self, text="", font=FONT_SMALL, anchor="w",
+                                    text_color=uikit.STATE_INFO)
 
         self.actions = ctk.CTkFrame(self, fg_color="transparent")
-        self.actions.grid(row=0, column=1, rowspan=4, sticky="e", padx=(0, 10))
+        self.actions.grid(row=0, column=1, rowspan=5, sticky="e", padx=(0, 10))
         self.btn_cancel = ctk.CTkButton(self.actions, text="Скасувати", width=96, height=30,
                                         fg_color=uikit.DANGER, hover_color=uikit.DANGER_HOVER,
                                         command=lambda: panel.cancel_job(job))
@@ -150,6 +175,8 @@ class JobRow(ctk.CTkFrame):
         uikit.wrap_to_width(self.lbl_title)
         if job.state != "queued":
             self.set_state(job.state, job.status)     # рядок створено, коли завдання вже йшло
+        if job.ftp_state:
+            self.set_ftp(job.ftp_state, job.ftp_note)
 
     def set_meta(self, title, summary):
         """Після відкладеного аналізу: справжня назва й обрана якість/доріжка."""
@@ -219,6 +246,19 @@ class JobRow(ctk.CTkFrame):
             self.bar.configure(mode="determinate")
             self.bar.set(self.fraction)
 
+    def set_ftp(self, state, text):
+        """Стан заливання на FTP (uploader) — «↑ …» під станом завантаження."""
+        if not state:
+            self.lbl_ftp.grid_remove()
+            return
+        colors = {"uploaded": uikit.STATE_OK, "already": uikit.STATE_OK,
+                  "error": uikit.STATE_ERROR, "need_choice": uikit.STATE_WARN,
+                  "confirm": uikit.STATE_WARN, "cancelled": uikit.STATE_WARN}
+        self.lbl_ftp.configure(text=f"↑ FTP: {text}",
+                               text_color=colors.get(state, uikit.STATE_INFO))
+        self.lbl_status.grid_configure(pady=(0, 0))
+        self.lbl_ftp.grid(row=4, column=0, sticky="ew", padx=(12, 8), pady=(0, 8))
+
     def _open(self):
         path = self.job.filepath
         if path and os.path.isfile(path):
@@ -246,6 +286,7 @@ class JobsPanel(uikit.Card):
         self.session = set()                # id завдань від останнього «все порожньо»
         self.compact = False
         self.filter = FILTER_ALL
+        self._filter_values = [FILTER_ALL, FILTER_FAILED, FILTER_ALREADY]
 
         self.grid_rowconfigure(1, weight=1)
         # Заголовок і кнопки — двома рядками: в один на 880–1000 px кнопки
@@ -283,6 +324,8 @@ class JobsPanel(uikit.Card):
                                                 command=self.save_report)
         self.btn_clear = uikit.SecondaryButton(buttons, text="Прибрати завершені", width=150,
                                                height=28, command=self.clear_finished)
+        self.btn_ftp = ctk.CTkButton(buttons, text="↑ На FTP", width=120, height=28,
+                                     command=app.open_ftp)
         self.jobs_list = ctk.CTkScrollableFrame(self, fg_color="transparent")
         self.jobs_list.grid(row=1, column=0, sticky="nsew", padx=8, pady=(0, 10))
         self.jobs_list.grid_columnconfigure(0, weight=1)
@@ -514,6 +557,10 @@ class JobsPanel(uikit.Card):
         finished = any(j.state in FINISHED for j in self.jobs.values())
         _show(self.btn_report, finished, column=3)
         _show(self.btn_clear, finished, column=4)
+        to_ftp = self.ftp_jobs()
+        _show(self.btn_ftp, bool(to_ftp), column=5)
+        if to_ftp:
+            self.btn_ftp.configure(text=f"↑ На FTP ({len(to_ftp)})")
         if bool(active) or paused or finished:
             if not self.buttons.winfo_manager():
                 self.buttons.grid()
@@ -532,11 +579,41 @@ class JobsPanel(uikit.Card):
 
     def _refresh_filter(self, failed):
         """Фільтр видно, коли є що відфільтрувати; спорожніла категорія
-        (напр., після «↻ Невдалі») — назад до «Усі»."""
-        already = any(filter_matches(j, FILTER_ALREADY) for j in self.jobs.values())
-        _show_at(self.seg_filter, bool(failed or already))
-        if self.filter == FILTER_FAILED and not failed or                 self.filter == FILTER_ALREADY and not already:
+        (напр., після «↻ Невдалі») — назад до «Усі». «Не на FTP» — лише коли
+        в цьому сеансі вже заливали."""
+        jobs = self.jobs.values()
+        already = any(filter_matches(j, FILTER_ALREADY) for j in jobs)
+        ftp_used = any(j.ftp_state for j in jobs)
+        not_uploaded = ftp_used and any(ftp_candidate(j) for j in jobs)
+        values = [FILTER_ALL, FILTER_FAILED, FILTER_ALREADY] +             ([FILTER_NOT_UPLOADED] if ftp_used else [])
+        if values != self._filter_values:
+            self._filter_values = values
+            self.seg_filter.configure(values=values)
+            self.seg_filter.set(self.filter if self.filter in values else FILTER_ALL)
+        _show_at(self.seg_filter, bool(failed or already or not_uploaded))
+        empty = {FILTER_FAILED: not failed, FILTER_ALREADY: not already,
+                 FILTER_NOT_UPLOADED: not not_uploaded}
+        if empty.get(self.filter):
             self.set_filter(FILTER_ALL)
+
+    def ftp_jobs(self):
+        """Завдання, файли яких можна залити на FTP (по одному на файл)."""
+        seen, result = set(), []
+        for job in sorted(self.jobs.values(), key=lambda j: j.id):
+            key = os.path.normcase(os.path.abspath(job.filepath)) if job.filepath else None
+            if key and key not in seen and ftp_candidate(job):
+                seen.add(key)
+                result.append(job)
+        return result
+
+    def set_ftp(self, job, state, text, path=""):
+        """Стан заливання від uploader — у завдання і в рядок."""
+        job.ftp_state, job.ftp_note = state, text
+        if path:
+            job.ftp_path = path
+        row = self.rows.get(job.id)
+        if row is not None:
+            row.set_ftp(state, text)
 
     def _update_total(self):
         """«Завершено: 4 · ⏱ 12,34» — лише ті, що зараз у списку: «Прибрати

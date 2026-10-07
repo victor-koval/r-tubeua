@@ -61,6 +61,12 @@ DEFAULTS = {
     "auto_report": True,       # звіт xlsx сам, коли пакет завантажився
     "check_updates_on_start": True,  # при запуску питати про нову версію програми й yt-dlp
     "watch_clipboard": False,  # скопійоване посилання на YouTube саме йде на аналіз
+    # FTP: сервер і логін зберігаються лише з «Запам'ятати» (пароль — у
+    # Диспетчері облікових даних Windows, не тут); без нього — до закриття програми.
+    "ftp_remember": False,
+    "ftp_host": "",
+    "ftp_user": "",
+    "ftp_sections": "video, video2, video3, video4, video5",   # черговість розділів
     "app_bad": [],             # версії програми, що не пройшли самоперевірку
     "geometry": "",
     "ytdlp_bad": [],           # версії yt-dlp, що не пройшли самоперевірку або не запустились
@@ -70,7 +76,8 @@ DEFAULTS = {
 # Службове (розмір вікна, стан оновлювача) сюди не входить.
 USER_KEYS = ("download_dir", "max_height", "container", "audio_container", "preferred_audio",
              "keep_original", "subs_mode", "theme", "notify_done", "taskbar_progress",
-             "resume_queue", "auto_report", "check_updates_on_start", "watch_clipboard")
+             "resume_queue", "auto_report", "check_updates_on_start", "watch_clipboard",
+             "ftp_sections")
 
 _lock = threading.Lock()
 _cache = None
