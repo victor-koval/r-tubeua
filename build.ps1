@@ -134,7 +134,7 @@ if ($target -ne $current) {
 
 Write-Host "Тести…" -ForegroundColor Cyan
 Push-Location $root
-& $python -m unittest discover tests
+& $python -m unittest discover -s tests -t .
 $testsCode = $LASTEXITCODE
 Pop-Location
 if ($testsCode -ne 0) {

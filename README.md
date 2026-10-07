@@ -249,8 +249,10 @@ py -3 -m venv .venv
 ```
 
 Результат — `dist\R-TubeUA.exe`, один файл без установлення. Перед збіркою
-проганяються тести (`python -m unittest discover tests`); на GitHub вони ж
-проганяються на кожен пуш (`.github/workflows/tests.yml`).
+проганяються тести (`python -m unittest discover -s tests -t .`); на GitHub вони ж
+проганяються на кожен пуш (`.github/workflows/tests.yml`). Тести пишуть лог,
+налаштування й чергу в тимчасову теку (`tests/__init__.py` ставить
+`RTUBE_HOME`), а не в справжній `%APPDATA%\R-TubeUA`.
 
 ### Реліз
 

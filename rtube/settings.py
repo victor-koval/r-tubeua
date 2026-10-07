@@ -5,7 +5,9 @@ import os
 import threading
 
 _APPDATA = os.environ.get("APPDATA") or os.path.expanduser("~")
-CONFIG_DIR = os.path.join(_APPDATA, "R-TubeUA")
+# RTUBE_HOME — інша тека для налаштувань, логу, черги й оновлень. Ставлять
+# тести (tests/__init__.py), щоб не писати в справжній лог і done.json.
+CONFIG_DIR = os.environ.get("RTUBE_HOME") or os.path.join(_APPDATA, "R-TubeUA")
 SETTINGS_PATH = os.path.join(CONFIG_DIR, "settings.json")
 
 
