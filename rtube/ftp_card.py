@@ -222,16 +222,18 @@ class FolderPicker(ctk.CTkToplevel):
         self.section = ctk.StringVar(value=task.section if task.section in known else known[0])
         ctk.CTkOptionMenu(top, values=known, variable=self.section, width=120,
                           command=lambda _: self._fill()).grid(row=0, column=0)
-        self.query = ctk.StringVar()
-        entry = ctk.CTkEntry(top, textvariable=self.query, placeholder_text="Пошук теки…",
-                             font=FONT_UI)
+        # Без textvariable: з нею CTkEntry не показує підказку «Пошук теки…».
+        entry = self.entry = ctk.CTkEntry(top, placeholder_text="Пошук теки…", font=FONT_UI)
         entry.grid(row=0, column=1, sticky="ew", padx=(8, 0))
-        self.query.trace_add("write", lambda *_: self._fill())
+        entry.bind("<KeyRelease>", lambda e: self._fill())
+        entry.bind("<<Paste>>", lambda e: self.after(10, self._fill), add="+")
 
         frame = ctk.CTkFrame(self, fg_color="transparent")
         frame.grid(row=2, column=0, sticky="nsew", padx=16, pady=8)
         frame.grid_columnconfigure(0, weight=1)
         frame.grid_rowconfigure(0, weight=1)
+        if hasattr(master, "apply_style"):
+            master.apply_style()            # темна чи світла тема для Batch.Treeview
         self.tree = ttk.Treeview(frame, show="tree", selectmode="browse", style="Batch.Treeview")
         self.tree.grid(row=0, column=0, sticky="nsew")
         scroll = ctk.CTkScrollbar(frame, command=self.tree.yview)
@@ -269,7 +271,7 @@ class FolderPicker(ctk.CTkToplevel):
         """Дерево розділу; з пошуком — лише теки, що містять запит, і їхні батьки."""
         self.tree.delete(*self.tree.get_children())
         tree = ftpstate.tree(self.section.get()) or {(): []}
-        query = self.query.get().strip().lower()
+        query = self.entry.get().strip().lower()
         wanted = None
         if query:
             needles = {query, ftpcat.translit(query)}
