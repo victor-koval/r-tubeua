@@ -97,6 +97,14 @@ class HistoryTest(unittest.TestCase):
         self.assertIn("не відповідає", builder.status["text"])
         self.assertEqual(ftpstate.index_size("video"), 0)
 
+    def test_stop_while_reading_tree_is_not_error(self):
+        """Зупинка під час читання тек (як у колеги о 14:42) — «Зупинено», не «Не вдалося»."""
+        builder = ftphistory.HistoryBuilder(self.connect, ["video"], product_mpath=self.mpath)
+        builder.stop()
+        builder.start().thread.join(10)
+        self.assertIsNone(builder.status["error"])
+        self.assertIn("Зупинено", builder.status["text"])
+
     def test_stop(self):
         def slow(pid):
             time.sleep(0.2)
