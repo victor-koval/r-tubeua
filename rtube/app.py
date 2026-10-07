@@ -717,8 +717,7 @@ class RTubeApp(ctk.CTk, *_DND_BASES):
         return all(self.ftp_login.get(k) for k in ("host", "user", "password"))
 
     def ftp_sections(self):
-        raw = settings.get("ftp_sections") or ""
-        return [s.strip().strip("/") for s in raw.replace(";", ",").split(",") if s.strip()]
+        return settings.ftp_sections()
 
     def uploads_section(self):
         """Поточний розділ — перший незабитий."""
