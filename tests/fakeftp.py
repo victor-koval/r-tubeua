@@ -15,6 +15,8 @@ class Server:
         self.files = dict(files or {})      # повний шлях → bytes
         self.limits = dict(limits or {})    # «/video» → скільки байт ще влазить
         self.drop_next_stor = False         # обірвати наступне STOR посередині
+        self.drops = 0                      # стільки STOR поспіль обірвати посередині
+        self.lose_on_rename = False         # «загубити» хвіст файлу при перейменуванні
         self.connections = 0
         self.log = []
 
@@ -89,8 +91,9 @@ class Conn:
             self.s.files[path] = bytes(data)
             if callback:
                 callback(block)
-            if self.s.drop_next_stor:
+            if self.s.drop_next_stor or (self.s.drops and len(data) > 64 * 1024):
                 self.s.drop_next_stor = False
+                self.s.drops = max(0, self.s.drops - 1)
                 self.closed = True
                 raise EOFError("з'єднання обірвалось")
         self.s.files[path] = bytes(data)
@@ -98,6 +101,8 @@ class Conn:
     def rename(self, src, dst):
         self._check()
         self.s.files[dst] = self.s.files.pop(src)
+        if self.s.lose_on_rename:
+            self.s.files[dst] = self.s.files[dst][:-1000]
         self.s.log.append(("RENAME", src, dst))
 
     def delete(self, path):

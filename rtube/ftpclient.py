@@ -42,6 +42,10 @@ class RootForbidden(FtpError):
     pass
 
 
+class Exists(FtpError):
+    """У теці вже є інший файл з таким ім'ям — без overwrite не чіпаємо."""
+
+
 class MissingFolder(FtpError):
     """Теки на сервері немає (перейменували чи прибрали) — треба перечитати дерево."""
 
@@ -227,7 +231,7 @@ class FtpClient:
         total = os.path.getsize(local)
         target, temp = parts + [name], parts + [name + PART_SUFFIX]
         if not overwrite and self.size(target) is not None:
-            raise FtpError(f"{'/'.join(target)} уже є на FTP")
+            raise Exists(f"{'/'.join(target)} уже є на FTP")
         temp_path = self._wire_path(temp)
         sent = [0]
 
@@ -270,6 +274,11 @@ class FtpClient:
         if got != total:
             raise FtpError(f"{name}: на FTP {got} байт замість {total} — заливання не завершено")
         self._call(lambda ftp: ftp.rename(temp_path, self._wire_path(target)))
+        # Перевірка вже готового файлу: у колеги лишився лише «.rtube-part», тож
+        # «залито» кажемо, тільки коли ID.mp4 справді є й потрібного розміру.
+        final = self.size(target)
+        if final != total:
+            raise FtpError(f"{name}: після перейменування на FTP {final} байт замість {total}")
         return "/".join(target)
 
     def _remove_part(self, temp):

@@ -248,6 +248,49 @@ class ManagerTest(unittest.TestCase):
         self.assertEqual(task.folder, "video/odyag_vzuttya_ta_aksesuari/odyag")
         self.assertIsNone(ftpstate.tree("video").get(("nema",)))
 
+    def test_retries_after_repeated_drops(self):
+        """Тричі поспіль обірвалось — докачується з місця обриву, а не помилка."""
+        self.server.drops = 3
+        with mock.patch.object(uploader, "RETRY_WAITS", (0.01, 0.01, 0.01)):
+            task = uploader.UploadTask(self.file(size=400_000), "590312170")
+            self.manager.plan([task])
+            self.wait(task, (uploader.PLANNED,))
+            self.manager.upload([task])
+            self.wait(task, (uploader.UPLOADED, uploader.ERROR))
+        self.assertEqual(task.state, uploader.UPLOADED, task.note)
+        with open(task.local, "rb") as f:
+            self.assertEqual(self.server.files["/" + task.ftp_path], f.read())
+        self.assertFalse(any(k.endswith(".rtube-part") for k in self.server.files))
+        self.assertEqual(ftpstate.pending(), [])
+
+    def test_not_uploaded_if_final_file_wrong(self):
+        """Після перейменування на FTP не той розмір — не «залито», а помилка й недолите."""
+        self.server.lose_on_rename = True
+        with mock.patch.object(uploader, "RETRY_WAITS", ()):
+            task = uploader.UploadTask(self.file(), "590312170")
+            self.manager.plan([task])
+            self.wait(task, (uploader.PLANNED,))
+            self.manager.upload([task])
+            self.wait(task, (uploader.UPLOADED, uploader.ERROR))
+        self.assertEqual(task.state, uploader.ERROR)
+        self.assertIn("байт", task.note)
+        self.assertIsNone(ftpstate.uploaded(task.local))
+        self.assertEqual([p["local"] for p in ftpstate.pending()], [task.local])
+
+    def test_pending_survives_restart_and_user_cancel_forgets(self):
+        task = uploader.UploadTask(self.file(), "590312170", section="video",
+                                   path=("odyag_vzuttya_ta_aksesuari", "odyag"),
+                                   state=uploader.PLANNED)
+        with self.manager._cond:                    # постоїть у черзі
+            self.manager.upload([task])
+            self.manager.cancel(task, keep_pending=True)       # закриття програми
+        self.wait(task, (uploader.CANCELLED,))
+        ftpstate.reset_cache()                              # «перезапуск»
+        pending = ftpstate.pending()
+        self.assertEqual(pending[0]["path"], ["odyag_vzuttya_ta_aksesuari", "odyag"])
+        self.manager.cancel(task)                           # користувач передумав
+        self.assertEqual(ftpstate.pending(), [])
+
     def test_existing_different_file_needs_confirm(self):
         local = self.file()
         self.server.files["/video/odyag_vzuttya_ta_aksesuari/odyag/590312170.mp4"] = b"other"

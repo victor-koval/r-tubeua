@@ -23,6 +23,9 @@ PLANNING, PLANNED, NEED_CHOICE, CONFIRM, ALREADY = \
 QUEUED, UPLOADING, UPLOADED, ERROR, CANCELLED = \
     "queued", "uploading", "uploaded", "error", "cancelled"
 READY = (PLANNED,)                       # можна заливати без питань
+# Обірвалось з'єднання чи сервер не відповів — ще спроби з докачуванням, а не
+# одразу «помилка» (у колеги лишився недолитий «.rtube-part»).
+RETRY_WAITS = (5, 15, 45)
 FINISHED = (UPLOADED, ALREADY, ERROR, CANCELLED)
 
 
@@ -92,6 +95,9 @@ class UploadManager:
             except OSError:
                 task.total = 0
             task.cancel_event = threading.Event()
+            ftpstate.add_pending(task.local, product_id=task.product_id, name=task.name,
+                                 section=task.section, path=list(task.path),
+                                 mpath=task.mpath or [], overwrite=task.overwrite)
             self._emit(task)
             self._push("upload", task)
 
@@ -107,8 +113,12 @@ class UploadManager:
         self._emit(task)
         self._push("check", task)        # чи немає вже такого файлу в новій теці
 
-    def cancel(self, task):
+    def cancel(self, task, keep_pending=False):
+        """keep_pending — програма закривається: недолите доллється після запуску;
+        інакше користувач передумав — забуваємо."""
         task.cancel_event.set()
+        if not keep_pending:
+            ftpstate.remove_pending(task.local)
         if task.state in (QUEUED, PLANNING):
             task.state, task.note = CANCELLED, "Скасовано"
             self._emit(task)
@@ -215,11 +225,15 @@ class UploadManager:
             self._files[key] = self._client_ready().list_files(folder)
         size = self._files[key].get(task.name)
         if size is None:
+            part = self._files[key].get(task.name + ftpclient.PART_SUFFIX)
+            if part and task.state == PLANNED:
+                task.note = f"Недолите з минулого разу ({part * 100 // max(1, os.path.getsize(task.local))}%) — доллється"
             return
         if size == os.path.getsize(task.local):
             task.ftp_path = f"{key}/{task.name}"
             task.state, task.note = ALREADY, "Уже є на FTP (той самий розмір)"
             ftpstate.mark_uploaded(task.local, task.ftp_path)
+            ftpstate.remove_pending(task.local)
         elif not task.overwrite:
             task.state, task.note = CONFIRM, "На FTP інший файл з таким ім'ям — замінити?"
 
@@ -229,6 +243,7 @@ class UploadManager:
             task.state, task.note = CANCELLED, "Скасовано"
             return
         reread = False                  # тека зникла — перечитуємо дерево розділу раз
+        attempt = 0                     # повтори після обриву (RETRY_WAITS)
         while True:
             if not task.path:
                 task.state = NEED_CHOICE
@@ -260,6 +275,9 @@ class UploadManager:
                 self._client = None
                 task.state, task.note = CANCELLED, "Скасовано"
                 return
+            except ftpclient.Exists:
+                task.state, task.note = CONFIRM, "На FTP інший файл з таким ім'ям — замінити?"
+                return
             except ftpclient.MissingFolder:
                 if reread:
                     raise
@@ -284,13 +302,44 @@ class UploadManager:
                     if task.state in (ALREADY, CONFIRM):
                         return
                 continue
+            except (ftpclient.NoSpace, ftpclient.RootForbidden):
+                raise
+            except Exception as exc:
+                # Обрив, тайм-аут, недолитий файл: з'єднання заново, докачування з місця обриву.
+                self._client = None
+                if attempt >= len(RETRY_WAITS):
+                    applog.error(f"FTP: {task.name} не залито після {attempt + 1} спроб", exc)
+                    raise
+                wait = RETRY_WAITS[attempt]
+                attempt += 1
+                applog.warning(f"FTP: {task.name} — {exc}; повтор через {wait} с "
+                               f"(спроба {attempt + 1} з {len(RETRY_WAITS) + 1})")
+                task.state = UPLOADING
+                task.note = (f"Зв'язок обірвався — повтор через {wait} с "
+                             f"(спроба {attempt + 1} з {len(RETRY_WAITS) + 1})")
+                self._emit(task)
+                if task.cancel_event.wait(wait):
+                    task.state, task.note = CANCELLED, "Скасовано"
+                    return
+                continue
             self._files.setdefault("/".join(folder), {})[task.name] = os.path.getsize(task.local)
             ftpstate.mark_uploaded(task.local, task.ftp_path)
+            ftpstate.remove_pending(task.local)
             ftpstate.learn(task.section, task.mpath, task.path)
             task.state, task.note, task.fraction = UPLOADED, "Залито", 1.0
             task.sent = task.total = os.path.getsize(task.local)
             applog.info(f"FTP: {task.local} → {task.ftp_path}")
             return
+
+
+# Корінь FTP — це https://video.rozetka.com.ua/: залите в video/…/ID.mp4 відкривається
+# за video.rozetka.com.ua/video/…/ID.mp4.
+PUBLIC_URL = "https://video.rozetka.com.ua/"
+
+
+def public_url(ftp_path):
+    """«video/sport_i_zahoplennya/…/361484283.mp4» → посилання на відео на сайті."""
+    return PUBLIC_URL + ftp_path.lstrip("/") if ftp_path else ""
 
 
 def batch_progress(tasks):

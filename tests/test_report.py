@@ -58,6 +58,19 @@ class WriteReportTest(unittest.TestCase):
         # Разом — лише завантажені.
         self.assertEqual(ws.cell(ws.max_row, 8).value, "3,27")
 
+    def test_rozetka_video_link(self):
+        from rtube import uploader
+        url = uploader.public_url("video/sport_i_zahoplennya/aktivnij_vidpochinok_turizm_ta_hobi/"
+                                  "361484283.mp4")
+        self.assertEqual(url, "https://video.rozetka.com.ua/video/sport_i_zahoplennya/"
+                              "aktivnij_vidpochinok_turizm_ta_hobi/361484283.mp4")
+        items = [{"product_id": "361484283", "url": "u", "title": "t", "filepath": "",
+                  "state": "done", "text": "Готово", "duration": 10, "ftp": url}]
+        ws = load_workbook(report.write_report(os.path.join(self.tmp.name, "z.xlsx"), items)).active
+        cell = ws.cell(2, len(report.HEADERS))
+        self.assertEqual(ws.cell(1, len(report.HEADERS)).value, "Відео на Rozetka")
+        self.assertEqual((cell.value, cell.hyperlink.target), (url, url))
+
     def test_shared_video_group(self):
         video = os.path.join(self.tmp.name, "590312170.mp4")
         with open(video, "wb") as f:
