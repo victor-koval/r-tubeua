@@ -70,7 +70,8 @@ a.download(); pump()
 check(not p.compact, "після «Завантажити» список розгорнутий")
 check(len(p.jobs) == 1 and len(p.rows) == 1, "одне завдання в списку")
 check(not a.video_card.winfo_manager(), "картка відео сховалась")
-check(a.ent_url.get() == "", "поле очищене")
+# Без фокуса вікна CTkEntry іноді ще не прибрав підказку-заглушку — це теж «порожньо».
+check(a.ent_url.get() in ("", a.ent_url.cget("placeholder_text")), "поле очищене")
 
 # пакет
 entries = [(f"https://www.youtube.com/watch?v=abcdefghij{i}", f"t{i}", str(590000000 + i))

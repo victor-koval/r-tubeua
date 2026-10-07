@@ -140,8 +140,11 @@ class FtpCard(uikit.Card):
         self._refresh()
 
     def ready(self):
+        """Що заливати кнопкою: визначені, підтверджені заміни й невдалі з текою —
+        повторне натискання «Залити» доливає те, що обірвалось."""
         return [t for t in self.tasks if t.state in uploader.READY or
-                (t.state == uploader.CONFIRM and t.overwrite)]
+                (t.state == uploader.CONFIRM and t.overwrite) or
+                (t.state in (uploader.ERROR, uploader.CANCELLED) and t.path)]
 
     def _refresh(self):
         count = lambda *states: sum(1 for t in self.tasks if t.state in states)
@@ -161,7 +164,7 @@ class FtpCard(uikit.Card):
                               ((uploader.QUEUED, uploader.UPLOADING), "заливається"),
                               ((uploader.UPLOADED,), "залито"),
                               ((uploader.ALREADY,), "уже на FTP"),
-                              ((uploader.ERROR,), "помилки")):
+                              ((uploader.ERROR,), "не залито — «Залити» ще раз")):
             c = count(*states)
             if c:
                 parts.append(f"{label}: {c}")

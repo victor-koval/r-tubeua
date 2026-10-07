@@ -6,7 +6,7 @@ from tkinter import messagebox
 
 import customtkinter as ctk
 
-from . import applog, downloader, report, tools, uikit
+from . import applog, downloader, report, tools, uikit, uploader
 from .uikit import FONT_SMALL, FONT_UI, FONT_UI_BOLD, GREEN
 
 ACTIVE = ("queued", "running")
@@ -30,9 +30,9 @@ def ftp_candidate(job):
 
 
 def ftp_text(job):
-    """Що писати про FTP у звіті."""
+    """Що писати про FTP у звіті: посилання на відео на сайті або помилка."""
     if job.ftp_path:
-        return job.ftp_path
+        return uploader.public_url(job.ftp_path)
     if job.ftp_state == "error":
         return f"Помилка: {job.ftp_note}"
     return ""
@@ -571,15 +571,16 @@ class JobsPanel(uikit.Card):
         _show(self.btn_report, finished, column=3)
         _show(self.btn_clear, finished, column=4)
         to_ftp = self.ftp_jobs()
+        orphans = self.app.ftp_orphans()
         progress = self.app.upload_progress()
-        _show(self.btn_ftp, bool(to_ftp) or progress is not None, column=5)
+        _show(self.btn_ftp, bool(to_ftp or orphans) or progress is not None, column=5)
         if progress is not None:
             # Поки заливається — прогрес на кнопці: видно й із закритою карткою.
             fraction = progress[5]
             self.btn_ftp.configure(text=f"↑ FTP {fraction * 100:.0f}%" if fraction is not None
                                    else "↑ FTP…")
-        elif to_ftp:
-            self.btn_ftp.configure(text=f"↑ На FTP ({len(to_ftp)})")
+        elif to_ftp or orphans:
+            self.btn_ftp.configure(text=f"↑ На FTP ({len(to_ftp) + len(orphans)})")
         if bool(active) or paused or finished:
             if not self.buttons.winfo_manager():
                 self.buttons.grid()

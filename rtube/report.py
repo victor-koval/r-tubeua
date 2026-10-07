@@ -19,7 +19,7 @@ from openpyxl.utils import get_column_letter
 from .uikit import format_min_sec, whole_seconds
 
 HEADERS = ("№", "ID товару", "Посилання", "Назва", "Файл", "Статус", "Деталі",
-           "Тривалість", "Розмір, МБ", "На FTP")
+           "Тривалість", "Розмір, МБ", "Відео на Rozetka")
 MAX_WIDTH = 60
 
 ALREADY_NOTE = "Уже є в теці"     # початок downloader.ALREADY_NOTE
@@ -116,6 +116,10 @@ def write_report(path, items):
             size,
             item.get("ftp") or "",
         ])
+        link = ws.cell(ws.max_row, len(HEADERS))
+        if str(link.value or "").startswith("http"):
+            link.hyperlink = link.value
+            link.style = "Hyperlink"
         group = groups.get(_key(item))
         if group is not None:
             fill = PatternFill("solid", fgColor=GROUP_FILLS[group["index"] % len(GROUP_FILLS)])

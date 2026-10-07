@@ -25,8 +25,8 @@ import time
 from . import applog, ftpcat
 from .settings import CONFIG_DIR
 
-TREE, INDEX, RULES, UPLOADED, SEEN = "ftp_tree.json", "ftp_index.json", "ftp_rules.json", \
-    "ftp_uploaded.json", "ftp_history_seen.json"
+TREE, INDEX, RULES, UPLOADED, SEEN, PENDING = "ftp_tree.json", "ftp_index.json", \
+    "ftp_rules.json", "ftp_uploaded.json", "ftp_history_seen.json", "ftp_pending.json"
 BASE_NAME = os.path.join("assets", "ftp_base.json")
 UPLOADED_LIMIT = 20000
 COUNT = "_count"        # службовий ключ у індексі розділу: скільки товарів у ньому
@@ -255,6 +255,31 @@ def mark_uploaded(local, ftp_path):
             for old in list(data)[:len(data) - UPLOADED_LIMIT]:
                 del data[old]
     _save(UPLOADED)
+
+
+# ── недолите: що поставили заливати, але ще не залито (переживає перезапуск) ──
+def _pending_key(local):
+    return os.path.normcase(os.path.abspath(local))
+
+
+def add_pending(local, **fields):
+    with _lock:
+        _load(PENDING)[_pending_key(local)] = dict(fields, local=local)
+    _save(PENDING)
+
+
+def remove_pending(local):
+    with _lock:
+        removed = _load(PENDING).pop(_pending_key(local), None)
+    if removed is not None:
+        _save(PENDING)
+
+
+def pending():
+    """[{local, product_id, name, section, path, mpath}] — лише ті, чий файл ще є."""
+    with _lock:
+        items = list(_load(PENDING).values())
+    return [i for i in items if os.path.isfile(i.get("local") or "")]
 
 
 # ── вивантаження бази для релізу ──

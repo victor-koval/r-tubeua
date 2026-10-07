@@ -77,6 +77,7 @@ class RTubeApp(ctk.CTk, *_DND_BASES):
         self.history = None                  # ftphistory.HistoryBuilder, коли оновлюють базу
         self._tree_callbacks = []            # хто чекає на перечитане дерево тек
         self.upload_batch = []               # завдання поточного заливання (загальний прогрес)
+        self._uploading = False              # чи йшло заливання на минулому опитуванні
         self.ftp_by_job = {}                 # job.id → UploadTask
         self.ui_events = queue.Queue()     # результати аналізу з фонових потоків
         self.dir_var = ctk.StringVar(value=settings.get("download_dir"))
@@ -113,6 +114,7 @@ class RTubeApp(ctk.CTk, *_DND_BASES):
         self.after(50, lambda: self.ent_url.focus_set())
         self.after(600, self._init_taskbar)
         self.after(300, self._restore_queue)
+        self.after(400, self._restore_uploads)
         threading.Thread(target=self._check_environment, daemon=True).start()
         self.watchdog = watchdog.Watchdog(threading.get_ident())
         self.watchdog.start()
@@ -735,6 +737,35 @@ class RTubeApp(ctk.CTk, *_DND_BASES):
         return ftpclient.FtpClient(host, login["user"], login["password"],
                                    port=int(port) if port.isdigit() else 21).connect()
 
+    def _restore_uploads(self):
+        """Недолите на FTP з минулого запуску (закрили посеред заливання, обрив) —
+        не губиться: з'являється в «↑ На FTP» і доливається з місця обриву."""
+        restored = 0
+        for item in ftpstate.pending():
+            if any(t.local == item["local"] for t in self.ftp_tasks.values()):
+                continue
+            task = uploader.UploadTask(item["local"], item.get("product_id") or "",
+                                       name=item.get("name") or "",
+                                       section=item.get("section") or "",
+                                       path=tuple(item.get("path") or ()),
+                                       mpath=item.get("mpath") or [],
+                                       overwrite=bool(item.get("overwrite")),
+                                       state=uploader.PLANNED if item.get("path") else
+                                       uploader.NEED_CHOICE,
+                                       note="Недолите з минулого запуску — доллється")
+            self.ftp_tasks[task.id] = task
+            restored += 1
+        if restored:
+            applog.info(f"Недолитих на FTP з минулого запуску: {restored}")
+            self.hint(f"Недолиті на FTP з минулого запуску: {restored} — «↑ На FTP» доллє їх",
+                      uikit.STATE_WARN)
+
+    def ftp_orphans(self):
+        """Завдання заливання без рядка в списку (недолите з минулого запуску), ще не залиті."""
+        return [t for t in self.ftp_tasks.values()
+                if t.job_id not in self.jobs_panel.jobs
+                and t.state not in (uploader.UPLOADED, uploader.ALREADY)]
+
     def open_ftp(self):
         """«↑ На FTP»: план для готових файлів із ID товару."""
         if not self.ftp_ready():
@@ -752,6 +783,7 @@ class RTubeApp(ctk.CTk, *_DND_BASES):
             elif task.state == uploader.ERROR:
                 new.append(task)        # помилка плану (зв'язок, пароль) — ще раз
             tasks.append(task)
+        tasks += [t for t in self.ftp_orphans() if t not in tasks]
         if not tasks:
             self.hint("Немає готових файлів з ID товару, які ще не на FTP", uikit.STATE_WARN)
             return
@@ -863,6 +895,24 @@ class RTubeApp(ctk.CTk, *_DND_BASES):
             if self.ftp_card.winfo_manager():
                 self.ftp_card.update_task(task)
             self._ftp_to_job(task)
+        uploading = self.upload_progress() is not None
+        if self._uploading and not uploading:
+            self._on_upload_done()
+        self._uploading = uploading
+
+    def _on_upload_done(self):
+        """Заливання закінчилось: невдалі — помітно, і сповіщення, якщо вікно не перед очима."""
+        done = sum(1 for t in self.upload_batch if t.state == uploader.UPLOADED)
+        failed = [t for t in self.upload_batch if t.state == uploader.ERROR]
+        if failed:
+            self.hint(f"Не залито на FTP: {len(failed)} — «↑ На FTP», потім «Залити» ще раз "
+                      "(доллється з місця обриву)", uikit.STATE_ERROR)
+        elif done:
+            self.hint(f"Залито на FTP: {done} відео", uikit.STATE_OK)
+        if (done or failed) and settings.get("notify_done") and \
+                (self.focus_displayof() is None or self.state() == "iconic"):
+            text = f"Залито на FTP: {done}" + (f" · не вдалося: {len(failed)}" if failed else "")
+            notify.show(APP_TITLE, text)
 
     # ── налаштування ──────────────────────────────────────────────────────
     def open_settings(self, section=None):
@@ -1021,7 +1071,8 @@ class RTubeApp(ctk.CTk, *_DND_BASES):
             self.manager.cancel(job, keep_partial=resume)
         for task in self.ftp_tasks.values():
             if task.state not in uploader.FINISHED:
-                self.uploads.cancel(task)       # недолитий .rtube-part докачається наступного разу
+                # Недолите лишається в списку недолитого — доллється після запуску.
+                self.uploads.cancel(task, keep_pending=True)
         self.stop_history()                     # зібране збережеться, продовжиться наступного разу
         if self.manager.is_busy() or self.uploads.is_busy():
             # Скасування спрацює на наступному кроці yt-dlp, після чого
