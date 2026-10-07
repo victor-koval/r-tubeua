@@ -65,6 +65,7 @@ class RTubeApp(ctk.CTk, *_DND_BASES):
         self.minsize(*MIN_SIZE)
         self.configure(fg_color=uikit.SURFACE_SUNKEN)
         uikit.apply_window_icon(self)
+        uikit.install_text_bindings(self)    # Ctrl+C/V/X/A і меню в усіх полях
 
         self.manager = downloader.DownloadManager(done_files=queuestore.load_done(),
                                                   on_done=queuestore.save_done)
@@ -73,7 +74,8 @@ class RTubeApp(ctk.CTk, *_DND_BASES):
         self.ftp_login = self._load_ftp_login()
         self.uploads = uploader.UploadManager(self._ftp_connect, self.ftp_sections)
         self.ftp_tasks = {}                  # task.id → UploadTask
-        self.history = None                  # ftphistory.HistoryBuilder, коли збирали
+        self.history = None                  # ftphistory.HistoryBuilder, коли оновлюють базу
+        self._tree_callbacks = []            # хто чекає на перечитане дерево тек
         self.ftp_by_job = {}                 # job.id → UploadTask
         self.ui_events = queue.Queue()     # результати аналізу з фонових потоків
         self.dir_var = ctk.StringVar(value=settings.get("download_dir"))
@@ -779,12 +781,14 @@ class RTubeApp(ctk.CTk, *_DND_BASES):
         for task in tasks:
             self._ftp_to_job(task)
 
-    def refresh_ftp_tree(self):
-        """Перечитати теки розділів (у фоні) і заново визначити ще не залиті."""
+    def refresh_ftp_tree(self, sections=None, on_done=None):
+        """Перечитати теки розділів (у фоні) і заново визначити ще не залиті.
+        on_done(помилка або None) — у потоці вікна, коли закінчено."""
         if not self.ftp_ready():
             self.open_settings(section="ftp")
             return
-        sections = self.ftp_sections()
+        sections = sections or self.ftp_sections()
+        self._tree_callbacks.append(on_done)
 
         def work():
             try:
@@ -799,14 +803,14 @@ class RTubeApp(ctk.CTk, *_DND_BASES):
                 applog.error("Дерево тек FTP не прочиталось", exc)
                 self.ui_events.put(("ftp_tree", None, uploader.human_error(exc)))
 
-        self.hint("Читаю теки на FTP…", uikit.STATE_INFO)
         threading.Thread(target=work, daemon=True).start()
 
     def _ftp_tree_read(self, count, error):
+        callback = self._tree_callbacks.pop(0) if self._tree_callbacks else None
+        if callback:
+            callback(error)
         if error:
-            self.hint(f"Теки FTP не прочитано: {error}", uikit.STATE_ERROR)
             return
-        self.hint(f"Теки FTP оновлено: {count}", uikit.STATE_OK)
         again = [t for t in self.ftp_card.tasks if t.state in
                  (uploader.PLANNED, uploader.NEED_CHOICE, uploader.ERROR)
                  and t.source != "rule"]

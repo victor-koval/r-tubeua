@@ -12,8 +12,7 @@ class HistoryTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.patches = [mock.patch.object(ftpstate, "CONFIG_DIR", self.tmp.name),
-                        mock.patch.object(ftphistory, "SEEN_PATH",
-                                          os.path.join(self.tmp.name, "seen.json")),
+                        mock.patch.object(ftpstate, "BASE_NAME", "nema_bazy.json"),
                         mock.patch.object(ftphistory, "applog", mock.MagicMock()),
                         mock.patch.object(ftphistory.rozetka, "save_cache")]
         for p in self.patches:
@@ -72,6 +71,31 @@ class HistoryTest(unittest.TestCase):
             ftpstate.save_tree(client.read_tree(["video"]))
             files = ftphistory.sample_files(client, "video", ftpstate.tree("video"), per_folder=2)
         self.assertEqual(len(files), 2)                   # rich_content пропущено
+
+    def test_site_errors_not_marked_seen(self):
+        """Сайт не відповів — товар не «оброблений»: наступного разу ще раз."""
+        flaky = {"100000002"}
+
+        def mpath(pid):
+            if pid in flaky:
+                raise ftphistory.rozetka.Unavailable("SSL")
+            return ["1"]
+
+        builder = ftphistory.HistoryBuilder(self.connect, ["video"], product_mpath=mpath).start()
+        builder.thread.join(10)
+        self.assertEqual(ftpstate.index_size("video"), 4)
+        flaky.clear()
+        self.run_builder()                                  # друга спроба — лише пропущений
+        self.assertEqual(self.calls, ["100000002"])
+
+    def test_site_down_stops(self):
+        def down(pid):
+            raise ftphistory.rozetka.Unavailable("offline")
+
+        builder = ftphistory.HistoryBuilder(self.connect, ["video"], product_mpath=down).start()
+        builder.thread.join(10)
+        self.assertIn("не відповідає", builder.status["text"])
+        self.assertEqual(ftpstate.index_size("video"), 0)
 
     def test_stop(self):
         def slow(pid):

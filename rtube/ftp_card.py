@@ -70,10 +70,8 @@ class FtpCard(uikit.Card):
         self.btn_upload = ctk.CTkButton(buttons, text="", height=44, font=uikit.FONT_BIG_BUTTON,
                                         command=self.upload)
         self.btn_upload.grid(row=0, column=0, sticky="ew")
-        uikit.SecondaryButton(buttons, text="Оновити теки", width=120, height=44,
-                              command=app.refresh_ftp_tree).grid(row=0, column=1, padx=(8, 0))
         uikit.SecondaryButton(buttons, text="Закрити", width=100, height=44,
-                              command=app.close_ftp).grid(row=0, column=2, padx=(8, 0))
+                              command=app.close_ftp).grid(row=0, column=1, padx=(8, 0))
 
     # ── вигляд ──
     def apply_style(self):
@@ -187,7 +185,8 @@ class FtpCard(uikit.Card):
                 task.note = "Буде замінено"
                 self.update_task(task)
             return "break"
-        FolderPicker(self, task, self.app.ftp_sections(), self._chosen)
+        FolderPicker(self, task, self.app.ftp_sections(), self._chosen,
+                     refresh=self.app.refresh_ftp_tree)
         return "break"
 
     def _chosen(self, task, section, path, remember):
@@ -202,9 +201,10 @@ class FtpCard(uikit.Card):
 class FolderPicker(ctk.CTkToplevel):
     """Вибір теки в дереві розділу. Корінь розділу вибрати не можна."""
 
-    def __init__(self, master, task, sections, on_choose):
+    def __init__(self, master, task, sections, on_choose, refresh=None):
+        """refresh(розділи, по_завершенні(помилка)) — перечитати теки з FTP."""
         super().__init__(master)
-        self.task, self.on_choose = task, on_choose
+        self.task, self.on_choose, self.refresh = task, on_choose, refresh
         self.title(f"Тека для {task.product_id or task.name}")
         self.configure(fg_color=uikit.SURFACE_SUNKEN)
         self.transient(master.winfo_toplevel())
@@ -239,8 +239,19 @@ class FolderPicker(ctk.CTkToplevel):
         self.tree.configure(yscrollcommand=scroll.set)
         self.tree.bind("<Double-1>", lambda e: self._ok())
 
+        hint = ctk.CTkFrame(self, fg_color="transparent")
+        hint.grid(row=3, column=0, sticky="ew", padx=16, pady=(0, 6))
+        self.lbl_refresh = ctk.CTkLabel(hint, text="Немає потрібної теки? Можливо, її створили "
+                                                   "нещодавно.", font=FONT_SMALL,
+                                        text_color=uikit.TEXT_MUTED)
+        self.lbl_refresh.pack(side="left")
+        self.btn_refresh = uikit.SecondaryButton(hint, text="Оновити список тек", width=150,
+                                                 height=26, font=FONT_SMALL,
+                                                 command=self._refresh_tree)
+        if refresh:
+            self.btn_refresh.pack(side="left", padx=(8, 0))
         bottom = ctk.CTkFrame(self, fg_color="transparent")
-        bottom.grid(row=3, column=0, sticky="ew", padx=16, pady=(0, 14))
+        bottom.grid(row=4, column=0, sticky="ew", padx=16, pady=(0, 14))
         bottom.grid_columnconfigure(0, weight=1)
         self.remember = ctk.BooleanVar(value=bool(task.mpath))
         ctk.CTkCheckBox(bottom, text="Запам'ятати для цієї категорії товарів",
@@ -282,6 +293,23 @@ class FolderPicker(ctk.CTkToplevel):
         if self.task.section == self.section.get() and current and self.tree.exists(current):
             self.tree.selection_set(current)
             self.tree.see(current)
+
+    def _refresh_tree(self):
+        """Перечитати теки лише цього розділу з FTP (кілька секунд)."""
+        self.btn_refresh.configure(state="disabled", text="Читаю…")
+
+        def done(error):
+            if not self.winfo_exists():
+                return
+            self.btn_refresh.configure(state="normal", text="Оновити список тек")
+            if error:
+                self.lbl_refresh.configure(text=f"Не вдалося: {error}"[:70],
+                                           text_color=uikit.STATE_ERROR)
+            else:
+                self.lbl_refresh.configure(text="Список тек оновлено", text_color=uikit.STATE_OK)
+                self._fill()
+
+        self.refresh([self.section.get()], done)
 
     def _ok(self):
         selected = self.tree.selection()

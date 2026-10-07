@@ -91,10 +91,17 @@ def save_cache():
         applog.warning(f"Кеш категорій товарів не записався: {exc}")
 
 
-def product_info(product_id, fetch=_get_json, save=True, languages=("ua", "ru")):
+class Unavailable(Exception):
+    """Сайт не відповів (мережа, сертифікат, 5xx) — товар не «відсутній», а невідомий."""
+
+
+def product_info(product_id, fetch=_get_json, save=True, languages=("ua", "ru"),
+                 raise_errors=False):
     """Категорія товару або None (немає на сайті, немає мережі). Кешується.
     languages=("ua",) — без російських назв (одним запитом): для історії FTP
-    досить mpath; такий запис позначено partial і доповниться, коли знадобиться."""
+    досить mpath; такий запис позначено partial і доповниться, коли знадобиться.
+    raise_errors — Unavailable замість None, коли сайт не відповів (історія FTP
+    тоді не позначає товар обробленим і спробує його наступного разу)."""
     gid = str(product_id).strip()
     if not gid.isdigit():
         return None
@@ -125,7 +132,11 @@ def product_info(product_id, fetch=_get_json, save=True, languages=("ua", "ru"))
                 applog.warning(f"Товар {gid}: російські назви категорій не отримано — {exc}")
     except Exception as exc:
         applog.warning(f"Товар {gid}: категорію на rozetka.com.ua не отримано — {exc}")
-        return hit.get("info") if hit else None     # краще застаріле, ніж нічого
+        if hit and hit.get("info"):
+            return hit["info"]                      # краще застаріле, ніж нічого
+        if raise_errors:
+            raise Unavailable(str(exc)) from exc
+        return None
     with _lock:
         _load()[gid] = {"t": now, "info": info}
     if save:

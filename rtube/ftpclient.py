@@ -42,6 +42,10 @@ class RootForbidden(FtpError):
     pass
 
 
+class MissingFolder(FtpError):
+    """Теки на сервері немає (перейменували чи прибрали) — треба перечитати дерево."""
+
+
 def is_no_space(exc):
     text = str(exc).lower()
     return text[:3] in NO_SPACE_CODES or (text[:3] in ("451", "426", "550") and
@@ -259,6 +263,8 @@ class FtpClient:
                 applog.warning(f"FTP {'/'.join(parts)}: немає місця — {exc}")
                 self._remove_part(temp)
                 raise NoSpace(str(exc)) from exc
+            if str(exc)[:3] in ("550", "553") and "no such" in str(exc).lower():
+                raise MissingFolder(f"Теки {'/'.join(parts)} немає на FTP") from exc
             raise FtpError(f"Не вдалося залити {name}: {exc}") from exc
         got = self.size(temp)
         if got != total:

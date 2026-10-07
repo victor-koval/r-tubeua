@@ -1,3 +1,4 @@
+import json
 import os
 import queue
 import tempfile
@@ -23,10 +24,13 @@ class StateTest(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.patch = mock.patch.object(ftpstate, "CONFIG_DIR", self.tmp.name)
         self.patch.start()
+        self.no_base = mock.patch.object(ftpstate, "BASE_NAME", "nema_bazy.json")
+        self.no_base.start()
         ftpstate.reset_cache()
 
     def tearDown(self):
         self.patch.stop()
+        self.no_base.stop()
         ftpstate.reset_cache()
         self.tmp.cleanup()
 
@@ -56,10 +60,73 @@ class StateTest(unittest.TestCase):
         self.assertIsNone(ftpstate.uploaded(local))
 
 
+class BaseTest(unittest.TestCase):
+    """Вшита база + свій шар."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.base = os.path.join(self.tmp.name, "base.json")
+        self.patches = [mock.patch.object(ftpstate, "CONFIG_DIR", self.tmp.name),
+                        mock.patch.object(ftpstate, "base_path", lambda: self.base)]
+        for p in self.patches:
+            p.start()
+        self.write_base(100, index={"2": {"a/b": 3, "_": 0}, "_count": 3}, seen=["1", "2"])
+
+    def tearDown(self):
+        for p in self.patches:
+            p.stop()
+        ftpstate.reset_cache()
+        self.tmp.cleanup()
+
+    def write_base(self, built, index, seen):
+        with open(self.base, "w", encoding="utf-8") as f:
+            json.dump({"built_at": built, "tree": {"video": [["a"], ["a", "b"], ["c"]]},
+                       "index": {"video": index}, "seen": {"video": seen}}, f)
+        ftpstate.reset_cache()
+
+    def test_base_used_without_local_data(self):
+        self.assertEqual(ftpstate.tree("video")[("a",)], ["b"])
+        self.assertEqual(ftpstate.index("video")["2"], {"a/b": 3, "_": 0})
+        self.assertEqual(ftpstate.index_size("video"), 3)
+        self.assertEqual(ftpstate.seen("video"), {"1", "2"})
+        self.assertEqual(ftpstate.tree_age(), 100)
+
+    def test_local_layer_on_top(self):
+        ftpstate.learn("video", ["1", "2"], ("c",))
+        ftpstate.mark_seen("video", ["3", "1"])
+        ftpstate.reset_cache()
+        self.assertEqual(ftpstate.index("video")["2"], {"a/b": 3, "_": 0, "c": 1})
+        self.assertEqual(ftpstate.index_size("video"), 4)
+        self.assertEqual(ftpstate.seen("video"), {"1", "2", "3"})
+        ftpstate.save_tree({"video": [["d"]]})             # перечитане — замість бази
+        self.assertEqual(ftpstate.tree("video")[()], ["d"])
+
+    def test_newer_base_drops_local_layer(self):
+        ftpstate.learn("video", ["1", "2"], ("c",))
+        ftpstate.mark_seen("video", ["3"])
+        ftpstate.remember("video", ["2"], ("a",))
+        self.write_base(200, index={"2": {"c": 9}, "_count": 9}, seen=["1", "2", "3", "4"])
+        self.assertEqual(ftpstate.index("video")["2"], {"c": 9})  # своє вже в новій базі
+        self.assertEqual(ftpstate.seen("video"), {"1", "2", "3", "4"})
+        self.assertEqual(ftpstate.rules("video"), {"2": ["a"]})   # ручні вибори — ваші, лишаються
+
+    def test_export_round_trip(self):
+        ftpstate.learn("video", ["1", "2"], ("c",))
+        ftpstate.mark_seen("video", ["3"])
+        out = os.path.join(self.tmp.name, "new_base.json")
+        self.assertEqual(ftpstate.export_base(out), {"video": 4})
+        with open(out, encoding="utf-8") as f:
+            data = json.load(f)
+        self.assertEqual(data["index"]["video"]["2"]["c"], 1)
+        self.assertEqual(data["seen"]["video"], ["1", "2", "3"])
+        self.assertGreater(data["built_at"], 100)
+
+
 class ManagerTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.patches = [mock.patch.object(ftpstate, "CONFIG_DIR", self.tmp.name),
+                        mock.patch.object(ftpstate, "BASE_NAME", "nema_bazy.json"),
                         mock.patch.object(uploader, "applog", mock.MagicMock()),
                         mock.patch.object(ftpclient, "applog", mock.MagicMock())]
         for p in self.patches:
@@ -152,6 +219,18 @@ class ManagerTest(unittest.TestCase):
         self.manager.choose(task, "video", ("krasa_ta_zdorovya", "apteka"))
         self.wait(task, (uploader.PLANNED,))
         self.assertEqual(ftpstate.rules("video"), {"777": ["krasa_ta_zdorovya", "apteka"]})
+
+    def test_vanished_folder_rereads_tree(self):
+        """Тека з бази на сервері зникла — дерево перечитується, тека визначається заново."""
+        ftpstate.save_tree({"video": [["nema"], ["nema", "teky"]]})
+        task = uploader.UploadTask(self.file(), "590312170", mpath=HOODIE["mpath"],
+                                   product=HOODIE, section="video", path=("nema", "teky"),
+                                   state=uploader.PLANNED)
+        self.manager.upload([task])
+        self.wait(task, (uploader.UPLOADED, uploader.ERROR))
+        self.assertEqual(task.state, uploader.UPLOADED, task.note)
+        self.assertEqual(task.folder, "video/odyag_vzuttya_ta_aksesuari/odyag")
+        self.assertIsNone(ftpstate.tree("video").get(("nema",)))
 
     def test_existing_different_file_needs_confirm(self):
         local = self.file()

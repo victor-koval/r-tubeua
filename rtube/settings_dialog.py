@@ -79,7 +79,8 @@ class SettingsDialog(ctk.CTkToplevel):
         self._section(TAB_DOWNLOADS, 0, "Завантаження", self._build_downloads)
         self._section(TAB_BACKGROUND, 0, "Робота у фоні", self._build_background)
         self._section(TAB_BACKGROUND, 1, "Вигляд", self._build_look)
-        self._section(TAB_FTP, 0, "Заливання на FTP", self._build_ftp)
+        self._section(TAB_FTP, 0, "Вхід на FTP", self._build_ftp_login)
+        self._section(TAB_FTP, 1, "База розкладання", self._build_ftp_base)
         self._section(TAB_UPDATES, 0, "Оновлення", self._build_updates)
         start = FOCUS_TABS.get(focus) or (TAB_UPDATES if self.updates_pending() else TAB_DOWNLOADS)
         self._select_tab(start)
@@ -250,7 +251,7 @@ class SettingsDialog(ctk.CTkToplevel):
                     "xlsx у теці з відео — як кнопка «📊 Звіт». Лише для пакетів "
                     "(від двох товарів), не для одного відео.")
 
-    def _build_ftp(self, body):
+    def _build_ftp_login(self, body):
         login = self.master.ftp_login
         self.ftp_host = ctk.StringVar(value=login.get("host", ""))
         self.ftp_user = ctk.StringVar(value=login.get("user", ""))
@@ -263,55 +264,65 @@ class SettingsDialog(ctk.CTkToplevel):
             self._label(body, row, text)
             entry = ctk.CTkEntry(body, textvariable=var, width=300, font=FONT_UI, **extra)
             entry.grid(row=row, column=1, sticky="w", pady=4)
+            setattr(self, ("ftp_host_entry", "ftp_user_entry", "ftp_pass_entry")[row], entry)
             var.trace_add("write", lambda *_: self._apply_ftp(persist=False))
         ctk.CTkCheckBox(body, text="Запам'ятати вхід", variable=self.ftp_remember, font=FONT_UI,
                         command=lambda: self._apply_ftp(persist=True)).grid(
             row=3, column=0, columnspan=2, sticky="w", pady=(6, 0))
-        ctk.CTkLabel(body, text="Без цього сервер, логін і пароль живуть лише до закриття програми. "
-                                "Пароль зберігається в Диспетчері облікових даних Windows, "
-                                "не у файлах програми.",
-                     font=FONT_SMALL, text_color=uikit.TEXT_MUTED, anchor="w", justify="left",
-                     wraplength=520).grid(row=4, column=0, columnspan=2, sticky="w",
-                                          padx=(30, 0), pady=(0, 4))
+        self._hint(body, 4, "Без цього сервер, логін і пароль живуть лише до закриття програми. "
+                            "Пароль зберігається в Диспетчері облікових даних Windows, "
+                            "не у файлах програми.", indent=True)
         self._label(body, 5, "Розділи по черзі")
         self.ftp_sections = ctk.StringVar(value=settings.get("ftp_sections"))
         ctk.CTkEntry(body, textvariable=self.ftp_sections, width=300, font=FONT_UI).grid(
             row=5, column=1, sticky="w", pady=4)
         self.ftp_sections.trace_add(
             "write", lambda *_: settings.set_many(ftp_sections=self.ftp_sections.get()))
-        ctk.CTkLabel(body, text="Коли розділ забитий («недостатньо місця»), файл іде в "
-                                "наступний. У корінь розділу програма не кладе нічого.",
-                     font=FONT_SMALL, text_color=uikit.TEXT_MUTED, anchor="w", justify="left",
-                     wraplength=520).grid(row=6, column=0, columnspan=2, sticky="w", pady=(0, 4))
+        self._hint(body, 6, "Коли розділ забитий («недостатньо місця»), файл іде в наступний. "
+                            "У корінь розділу програма не кладе нічого.")
         line = ctk.CTkFrame(body, fg_color="transparent")
         line.grid(row=7, column=0, columnspan=2, sticky="w", pady=(6, 0))
-        self.btn_ftp_check = uikit.SecondaryButton(line, text="Перевірити й прочитати теки",
-                                                   width=210, command=self._check_ftp)
+        self.btn_ftp_check = uikit.SecondaryButton(line, text="Перевірити вхід", width=160,
+                                                   command=self._check_ftp)
         self.btn_ftp_check.pack(side="left")
-        self.lbl_ftp = ctk.CTkLabel(line, text=self._ftp_text(), font=FONT_SMALL,
-                                    text_color=uikit.TEXT_MUTED)
+        self.lbl_ftp = ctk.CTkLabel(line, text="чи пускає сервер з цим логіном і паролем",
+                                    font=FONT_SMALL, text_color=uikit.TEXT_MUTED)
         self.lbl_ftp.pack(side="left", padx=(12, 0))
+
+    def _build_ftp_base(self, body):
+        """База розкладання — вшита в програму; оновлювати рідко й лише вручну."""
+        self.lbl_base = ctk.CTkLabel(body, text="", font=FONT_UI, anchor="w", justify="left",
+                                     wraplength=560)
+        self.lbl_base.grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 4))
+        self._hint(body, 1, "Це теки на FTP і те, куди ви вже клали товари: за цим програма "
+                            "обирає теку. База вшита в програму й оновлюється з кожним "
+                            "релізом. Оновлювати вручну не обов'язково — лише якщо на FTP "
+                            "з'явились нові теки або програма часто помиляється з текою. "
+                            "Це довго (до години на розділ), іде у фоні й продовжиться з "
+                            "того самого місця.")
         line = ctk.CTkFrame(body, fg_color="transparent")
-        line.grid(row=8, column=0, columnspan=2, sticky="w", pady=(8, 0))
-        self.btn_history = uikit.SecondaryButton(line, text="Зібрати історію", width=210,
+        line.grid(row=2, column=0, columnspan=2, sticky="w", pady=(6, 0))
+        self.btn_history = uikit.SecondaryButton(line, text="Оновити базу", width=160,
                                                  command=self._toggle_history)
         self.btn_history.pack(side="left")
         self.lbl_history = ctk.CTkLabel(line, text="", font=FONT_SMALL, text_color=uikit.TEXT_MUTED)
         self.lbl_history.pack(side="left", padx=(12, 0))
-        ctk.CTkLabel(body, text="Програма дивиться, куди ви вже клали товари в кожному розділі, "
-                                "і кладе нові так само. Довго (до години на розділ), іде у фоні; "
-                                "можна зупинити й продовжити.",
-                     font=FONT_SMALL, text_color=uikit.TEXT_MUTED, anchor="w", justify="left",
-                     wraplength=520).grid(row=9, column=0, columnspan=2, sticky="w", pady=(2, 4))
         self._poll_history()
 
-    def _ftp_text(self):
+    def _hint(self, body, row, text, indent=False):
+        ctk.CTkLabel(body, text=text, font=FONT_SMALL, text_color=uikit.TEXT_MUTED, anchor="w",
+                     justify="left", wraplength=540).grid(
+            row=row, column=0, columnspan=2, sticky="w", padx=(30 if indent else 0, 0),
+            pady=(0, 4))
+
+    def _base_text(self):
+        sizes = [f"{s} — {ftpstate.index_size(s)}" for s in self.master.ftp_sections()
+                 if ftpstate.index_size(s)]
         age = ftpstate.tree_age()
-        if not age:
-            return "теки ще не читались"
-        sections = [s for s in self.master.ftp_sections() if ftpstate.tree(s) is not None]
-        return (f"теки прочитано {time.strftime('%d.%m %H:%M', time.localtime(age))}"
-                f" · {', '.join(sections)}")
+        when = f" (станом на {time.strftime('%d.%m.%Y', time.localtime(age))})" if age else ""
+        if not sizes:
+            return "Бази розкладання ще немає — програма обиратиме теку лише за назвою."
+        return f"Програма знає, куди ви клали товари: {', '.join(sizes)}{when}."
 
     def _toggle_history(self):
         app = self.master
@@ -320,7 +331,7 @@ class SettingsDialog(ctk.CTkToplevel):
         else:
             self._apply_ftp(persist=True)
             if not app.ftp_ready():
-                self.lbl_history.configure(text="вкажіть сервер, логін і пароль",
+                self.lbl_history.configure(text="спершу вкажіть вхід на FTP вище",
                                            text_color=uikit.STATE_WARN)
                 return
             app.start_history()
@@ -332,15 +343,14 @@ class SettingsDialog(ctk.CTkToplevel):
         app = self.master
         running = app.history_running()
         status = app.history.status if app.history else None
+        self.lbl_base.configure(text=self._base_text())
         if status:
-            color = uikit.STATE_ERROR if status.get("error") else                 uikit.STATE_INFO if running else uikit.TEXT_MUTED
+            color = uikit.STATE_ERROR if status.get("error") else \
+                uikit.STATE_INFO if running else uikit.TEXT_MUTED
             self.lbl_history.configure(text=status["text"][:90], text_color=color)
         else:
-            sizes = [f"{s}: {ftpstate.index_size(s)}" for s in app.ftp_sections()
-                     if ftpstate.index_size(s)]
-            self.lbl_history.configure(text=("у історії товарів — " + ", ".join(sizes)) if sizes
-                                       else "історію ще не збирали", text_color=uikit.TEXT_MUTED)
-        self.btn_history.configure(text="Зупинити збір" if running else "Зібрати історію")
+            self.lbl_history.configure(text="")
+        self.btn_history.configure(text="Зупинити оновлення" if running else "Оновити базу")
         if running:
             self.after(1000, self._poll_history)
 
@@ -349,26 +359,21 @@ class SettingsDialog(ctk.CTkToplevel):
                                   bool(self.ftp_remember.get()), persist=persist)
 
     def _check_ftp(self):
-        """Вхід і читання дерева тек — нічого на сервері не змінює."""
+        """Лише вхід — чи пускає сервер; нічого на ньому не читає й не змінює."""
         self._apply_ftp(persist=True)
         if not self.master.ftp_ready():
             self.lbl_ftp.configure(text="вкажіть сервер, логін і пароль", text_color=uikit.STATE_WARN)
             return
-        self.btn_ftp_check.configure(state="disabled", text="Читаю теки…")
-        sections = self.master.ftp_sections()
+        self.btn_ftp_check.configure(state="disabled", text="Перевіряю…")
         result = {}
 
         def work():
             try:
                 client = self.master._ftp_connect()
-                try:
-                    result["kind"] = client.kind
-                    result["tree"] = client.read_tree(sections)
-                finally:
-                    client.close()
-                ftpstate.save_tree(result["tree"])
+                result["kind"] = client.kind
+                client.close()
             except Exception as exc:
-                applog.error("Перевірка FTP не вдалася", exc)
+                applog.error("Перевірка входу FTP не вдалася", exc)
                 result["error"] = uploader.human_error(exc)
 
         thread = threading.Thread(target=work, daemon=True)
@@ -381,17 +386,12 @@ class SettingsDialog(ctk.CTkToplevel):
             return
         if not self.winfo_exists():
             return
-        self.btn_ftp_check.configure(state="normal", text="Перевірити й прочитати теки")
+        self.btn_ftp_check.configure(state="normal", text="Перевірити вхід")
         if result.get("error"):
             self.lbl_ftp.configure(text=result["error"][:80], text_color=uikit.STATE_ERROR)
-            return
-        tree = result["tree"]
-        count = sum(len(p) for p in tree.values())
-        missing = [s for s, p in tree.items() if not p]
-        text = f"підключено ({result['kind']}) · тек: {count}"
-        if missing:
-            text += f" · порожні чи немає: {', '.join(missing)}"
-        self.lbl_ftp.configure(text=text, text_color=uikit.STATE_WARN if missing else uikit.STATE_OK)
+        else:
+            self.lbl_ftp.configure(text=f"✓ сервер пускає ({result['kind']})",
+                                   text_color=uikit.STATE_OK)
 
     def destroy(self):
         if hasattr(self, "ftp_host"):
