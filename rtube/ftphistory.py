@@ -16,7 +16,7 @@ import re
 import threading
 import time
 
-from . import applog, ftpcat, ftpstate, rozetka
+from . import applog, ftpcat, ftpclient, ftpstate, rozetka
 
 SAMPLE_PER_FOLDER = 40
 ID_FILE = re.compile(r"(\d{6,12})(?:_\d+)?\.(?:mp4|mkv|mov|webm|avi|m4v)", re.I)
@@ -115,6 +115,10 @@ class HistoryBuilder:
             sizes = ", ".join(f"{s}: {ftpstate.index_size(s)}" for s in self._sections)
             self.status["text"] = ("Зупинено — продовжиться з того місця. " if stopped else
                                    "Готово. ") + f"У базі відео — {sizes}"
+        except ftpclient.Cancelled:
+            # «Зупинити» посеред читання тек — це не помилка.
+            applog.info("Оновлення бази FTP зупинено")
+            self.status["text"] = "Зупинено — продовжиться з того місця."
         except Exception as exc:
             applog.error("Збір історії FTP не вдався", exc)
             self.status["error"] = str(exc)
