@@ -3,7 +3,7 @@
 import os
 import unittest
 
-from rtube import downloader, jobs
+from rtube import downloader, formats, jobs
 
 
 def job(pid, state="done", filepath="", duration=60, also_for=(), status="Готово"):
@@ -43,6 +43,32 @@ class SummaryTest(unittest.TestCase):
     def test_summary_mentions_passengers(self):
         self.assertIn("ID 590312170 + ще 2 з тим самим відео",
                       job("590312170", also_for=["1", "2"]).summary())
+
+
+class FtpCandidateTest(unittest.TestCase):
+    """На FTP — лише відео: «лише звук» (m4a, mp3, навіть .webm) туди не йде."""
+
+    def setUp(self):
+        import tempfile
+        self.tmp = tempfile.TemporaryDirectory()
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def done(self, name, video_key=(1080, 30, "H.264")):
+        path = os.path.join(self.tmp.name, name)
+        open(path, "wb").close()
+        j = job("590312170", filepath=path)
+        j.video_key = video_key
+        return j
+
+    def test_only_video(self):
+        self.assertTrue(jobs.ftp_candidate(self.done("590312170.mp4")))
+        self.assertTrue(jobs.ftp_candidate(self.done("590312170.mkv")))
+        audio = (formats.AUDIO_ONLY,)
+        for name in ("590312170.m4a", "590312170.mp3", "590312170.webm"):
+            self.assertFalse(jobs.ftp_candidate(self.done(name, video_key=audio)), name)
+        self.assertFalse(jobs.ftp_candidate(self.done("590312170.m4a", video_key=None)))
 
 
 if __name__ == "__main__":

@@ -743,6 +743,9 @@ class RTubeApp(ctk.CTk, *_DND_BASES):
         for item in ftpstate.pending():
             if any(t.local == item["local"] for t in self.ftp_tasks.values()):
                 continue
+            if not uploader.is_video(item["local"]):
+                ftpstate.remove_pending(item["local"])      # звук на FTP не заливаємо
+                continue
             task = uploader.UploadTask(item["local"], item.get("product_id") or "",
                                        name=item.get("name") or "",
                                        section=item.get("section") or "",

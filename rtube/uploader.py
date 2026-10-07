@@ -28,6 +28,13 @@ READY = (PLANNED,)                       # можна заливати без п
 # одразу «помилка» (у колеги лишився недолитий «.rtube-part»).
 RETRY_WAITS = (5, 15, 45)
 FINISHED = (UPLOADED, ALREADY, ERROR, CANCELLED)
+# На FTP — лише відео товарів; звук (m4a, mp3…) туди не потрапляє ніколи.
+VIDEO_EXTS = (".mp4", ".mkv", ".mov", ".webm", ".avi", ".m4v")
+NOT_VIDEO = "Не відео — на FTP заливаються лише відео"
+
+
+def is_video(path):
+    return os.path.splitext(path or "")[1].lower() in VIDEO_EXTS
 
 
 @dataclass
@@ -149,7 +156,11 @@ class UploadManager:
                 continue
             self.running = task
             try:
-                if kind == "plan":
+                if not is_video(task.local):
+                    # Запобіжник: звідки б не прийшов звук (старе недолите тощо).
+                    task.state, task.note = ERROR, NOT_VIDEO
+                    ftpstate.remove_pending(task.local)
+                elif kind == "plan":
                     self._plan(task)
                 elif kind == "check":
                     self._check_existing(task)

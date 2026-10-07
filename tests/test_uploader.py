@@ -345,6 +345,22 @@ class ManagerTest(unittest.TestCase):
         self.manager.upload([task])
         self.wait(task, (uploader.CONFIRM,))
 
+    def test_audio_never_uploaded(self):
+        """Звук (напр. недолите зі старої версії) на FTP не йде навіть із готовою текою."""
+        local = self.file("590312170.m4a")
+        task = uploader.UploadTask(local, "590312170", section="video",
+                                   path=("odyag_vzuttya_ta_aksesuari", "odyag"),
+                                   state=uploader.PLANNED)
+        self.manager.upload([task])
+        self.wait(task, (uploader.ERROR,))
+        self.assertEqual(task.note, uploader.NOT_VIDEO)
+        self.assertEqual(self.server.files, {})
+        self.assertEqual(ftpstate.pending(), [])
+        planned = uploader.UploadTask(self.file("590312171.mp3"), "590312171")
+        self.manager.plan([planned])
+        self.wait(planned, (uploader.ERROR,))
+        self.assertEqual(self.server.connections, 0)
+
     def test_cancel_queued(self):
         task = uploader.UploadTask(self.file(), "590312170", path=("x",), section="video",
                                    state=uploader.PLANNED)

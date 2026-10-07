@@ -142,9 +142,10 @@ class FtpCard(uikit.Card):
     def ready(self):
         """Що заливати кнопкою: визначені, підтверджені заміни й невдалі з текою —
         повторне натискання «Залити» доливає те, що обірвалось."""
-        return [t for t in self.tasks if t.state in uploader.READY or
+        return [t for t in self.tasks if uploader.is_video(t.local) and (
+                t.state in uploader.READY or
                 (t.state == uploader.CONFIRM and t.overwrite) or
-                (t.state in (uploader.ERROR, uploader.CANCELLED) and t.path)]
+                (t.state in (uploader.ERROR, uploader.CANCELLED) and t.path))]
 
     def _refresh(self):
         count = lambda *states: sum(1 for t in self.tasks if t.state in states)
