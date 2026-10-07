@@ -22,9 +22,11 @@ FTP_DONE = ("uploaded", "already")      # uploader: залито / уже бул
 
 
 def ftp_candidate(job):
-    """Чи можна (і чи ще треба) залити файл цього завдання на FTP: готовий файл
-    з ID товару, свій (а не посилання на файл іншого товару), ще не залитий."""
+    """Чи можна (і чи ще треба) залити файл цього завдання на FTP: готове відео
+    з ID товару (не «лише звук»), свій файл (а не посилання на файл іншого
+    товару), ще не залитий."""
     return (job.state == "done" and bool(job.product_id) and bool(job.filepath)
+            and not job.audio_only and uploader.is_video(job.filepath)
             and not job.status.startswith(downloader.SAME_VIDEO)
             and job.ftp_state not in FTP_DONE and os.path.isfile(job.filepath))
 
