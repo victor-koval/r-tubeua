@@ -76,6 +76,7 @@ class RTubeApp(ctk.CTk, *_DND_BASES):
         self.ftp_tasks = {}                  # task.id → UploadTask
         self.history = None                  # ftphistory.HistoryBuilder, коли оновлюють базу
         self._tree_callbacks = []            # хто чекає на перечитане дерево тек
+        self.upload_batch = []               # завдання поточного заливання (загальний прогрес)
         self.ftp_by_job = {}                 # job.id → UploadTask
         self.ui_events = queue.Queue()     # результати аналізу з фонових потоків
         self.dir_var = ctk.StringVar(value=settings.get("download_dir"))
@@ -650,8 +651,11 @@ class RTubeApp(ctk.CTk, *_DND_BASES):
         done = sum(1 for j in session if j.state in FINISHED)
         total = max(1, len(session))
         fraction = self.jobs_panel.running_fraction()
+        upload = self.upload_progress()
         if self.manager.paused and active:
             self.taskbar.set_progress(done / total, taskbar.PAUSED)
+        elif not active and upload is not None and upload[5] is not None:
+            self.taskbar.set_progress(upload[5])      # нічого не качається — прогрес заливання
         elif fraction is not None:
             self.taskbar.set_progress((done + fraction) / total)
         elif active or self._analyzing or ffinstall.in_progress():
@@ -776,7 +780,13 @@ class RTubeApp(ctk.CTk, *_DND_BASES):
         self._ready_for_next()
 
     def start_upload(self, tasks):
+        busy = any(t.state in (uploader.QUEUED, uploader.UPLOADING) for t in self.upload_batch)
+        if not busy:
+            self.upload_batch = []          # попереднє заливання закінчилось — нова партія
+        self.upload_batch += [t for t in tasks if t not in self.upload_batch]
         self.uploads.upload(tasks)
+        self.hint(f"Заливаю на FTP: {len(tasks)} відео — прогрес на кнопці «↑ FTP» над списком",
+                  uikit.STATE_INFO)
         for task in tasks:
             self._ftp_to_job(task)
 
@@ -816,6 +826,12 @@ class RTubeApp(ctk.CTk, *_DND_BASES):
         if again:
             self.uploads.plan(again)
 
+    def upload_progress(self):
+        """batch_progress поточного заливання, лише поки воно триває; інакше None."""
+        if not any(t.state in (uploader.QUEUED, uploader.UPLOADING) for t in self.upload_batch):
+            return None
+        return uploader.batch_progress(self.upload_batch)
+
     def _ftp_to_job(self, task):
         """Стан заливання — у рядок завдання (лише коли заливання почалось)."""
         job = self.jobs_panel.jobs.get(task.job_id)
@@ -831,7 +847,7 @@ class RTubeApp(ctk.CTk, *_DND_BASES):
             text = task.note
         elif task.folder and task.state in (uploader.QUEUED, uploader.UPLOADING):
             text += f" → {task.folder}"
-        self.jobs_panel.set_ftp(job, task.state, text, task.ftp_path)
+        self.jobs_panel.set_ftp(job, task.state, text, task.ftp_path, task.fraction)
 
     def _drain_uploads(self):
         changed = {}

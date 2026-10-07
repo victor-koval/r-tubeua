@@ -10,6 +10,7 @@ import itertools
 import os
 import queue
 import threading
+import time
 from dataclasses import dataclass, field
 
 from . import applog, ftpcat, ftpclient, ftpstate, rozetka
@@ -42,6 +43,9 @@ class UploadTask:
     state: str = PLANNING
     note: str = ""
     fraction: float = 0.0
+    sent: int = 0                       # залито байт (для загальної смужки)
+    total: int = 0                      # розмір файлу, байт
+    speed: float = 0.0                  # байт/с, згладжено
     ftp_path: str = ""
     id: int = field(default_factory=lambda: next(_task_ids))
     cancel_event: threading.Event = field(default_factory=threading.Event)
@@ -82,6 +86,11 @@ class UploadManager:
     def upload(self, tasks):
         for task in tasks:
             task.state, task.note, task.fraction = QUEUED, "У черзі на FTP", 0.0
+            task.sent, task.speed = 0, 0.0
+            try:
+                task.total = os.path.getsize(task.local)
+            except OSError:
+                task.total = 0
             task.cancel_event = threading.Event()
             self._emit(task)
             self._push("upload", task)
@@ -229,7 +238,17 @@ class UploadManager:
             task.state, task.note = UPLOADING, f"Заливаю в {task.folder}…"
             self._emit(task)
 
+            clock = {"t": time.monotonic(), "b": None}
+
             def progress(done, total):
+                now = time.monotonic()
+                if clock["b"] is None:
+                    clock["b"] = done           # докачування: рахуємо від того, що вже було
+                elif now - clock["t"] >= 0.5:
+                    rate = (done - clock["b"]) / (now - clock["t"])
+                    task.speed = rate if not task.speed else 0.7 * task.speed + 0.3 * rate
+                    clock["t"], clock["b"] = now, done
+                task.sent, task.total = done, total
                 task.fraction = done / total if total else 0.0
                 self.events.put(("progress", task.id, task.fraction))
 
@@ -269,8 +288,36 @@ class UploadManager:
             ftpstate.mark_uploaded(task.local, task.ftp_path)
             ftpstate.learn(task.section, task.mpath, task.path)
             task.state, task.note, task.fraction = UPLOADED, "Залито", 1.0
+            task.sent = task.total = os.path.getsize(task.local)
             applog.info(f"FTP: {task.local} → {task.ftp_path}")
             return
+
+
+def batch_progress(tasks):
+    """Загальний стан заливання цих завдань: (готово файлів, усього файлів,
+    байт залито, байт усього, швидкість байт/с, частка або None)."""
+    tasks = [t for t in tasks if t.state in (QUEUED, UPLOADING, UPLOADED)]
+    if not tasks:
+        return None
+    done = sum(1 for t in tasks if t.state == UPLOADED)
+    total = sum(t.total for t in tasks)
+    sent = sum(t.total if t.state == UPLOADED else t.sent for t in tasks)
+    speed = sum(t.speed for t in tasks if t.state == UPLOADING)
+    return done, len(tasks), sent, total, speed, (sent / total if total else None)
+
+
+def describe_batch(progress):
+    """«Заливається 3 з 10 · 45 з 120 МБ · 5,2 МБ/с · ще ~1 хв»."""
+    done, count, sent, total, speed, _fraction = progress
+    mb = 1024 * 1024
+    parts = [f"Залито {done} з {count}" if done == count else f"Заливається {done + 1} з {count}"]
+    if total:
+        parts.append(f"{sent / mb:.0f} з {total / mb:.0f} МБ")
+    if speed and done < count:
+        parts.append(f"{speed / mb:.1f} МБ/с".replace(".", ","))
+        left = (total - sent) / speed
+        parts.append("ще ~" + (f"{int(left)} с" if left < 60 else f"{round(left / 60)} хв"))
+    return "  ·  ".join(parts)
 
 
 def human_error(exc):

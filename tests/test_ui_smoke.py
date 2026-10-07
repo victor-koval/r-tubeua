@@ -240,6 +240,8 @@ card.upload()
 until(lambda: not a.uploads.is_busy() and all(t.state == uploader.UPLOADED for t in tasks.values()),
       "обидва залито")
 check("/video/odyag_vzuttya_ta_aksesuari/odyag/590312170.mp4" in server.files, "файл на FTP")
+until(lambda: card.progress.winfo_manager() and "Залито 2 з 2" in card.lbl_progress.cget("text"),
+      "загальна смужка заливання в картці: «Залито 2 з 2»")
 row = p.rows[files[0].id]
 # Потік уже позначив «залито» — рядок оновиться з наступним опитуванням вікна.
 until(lambda: row.lbl_ftp.winfo_manager() and "залито" in row.lbl_ftp.cget("text"),
