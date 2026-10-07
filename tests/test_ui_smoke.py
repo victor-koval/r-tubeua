@@ -169,6 +169,7 @@ a.open_settings(); pump()
 d = a._settings_window
 check(d.update_line.winfo_manager() and "9.9.9" in d.btn_restart.cget("text"),
       "кнопка «Оновити до 9.9.9…» в Налаштуваннях")
+check(d.tab == "Оновлення", "з готовим оновленням Налаштування відкриваються на «Оновлення»")
 # активне завантаження без «продовжувати після перезапуску» — не перезапускаємо
 with mock.patch.object(a, "restart") as restart:
     d.btn_restart.invoke(); pump()
@@ -246,6 +247,9 @@ a.close_ftp(); pump()
 a.open_settings(section="ftp"); pump()
 d = a._settings_window
 check(d.ftp_user.get() == "u", "вхід FTP у Налаштуваннях")
+check(d.tab == "FTP", "Налаштування відкрито на вкладці FTP")
+_l, _t, _w, _h = app.uikit.work_rect()
+check(not _h or d.winfo_height() + 30 <= _h, "вікно Налаштувань влазить в екран")
 # два залиті вище файли вже в історії video
 check(d.btn_history.cget("text") == "Зібрати історію" and "video: 2" in d.lbl_history.cget("text"),
       "кнопка «Зібрати історію» й розмір історії")

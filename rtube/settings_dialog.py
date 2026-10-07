@@ -20,6 +20,11 @@ QUALITY_OPTIONS = [("Найкраща доступна", 0), ("2160p (4K)", 2160
                    ("1080p", 1080), ("720p", 720), ("480p", 480), ("360p", 360)]
 AUDIO_OPTIONS = [("Українська, якщо є, інакше оригінал", "uk"), ("Оригінальна", "orig")]
 SUBS_OPTIONS = [("Вшивати у відео", "embed"), ("Окремим файлом .srt", "file")]
+TAB_DOWNLOADS, TAB_BACKGROUND, TAB_FTP, TAB_UPDATES = "Завантаження", "Фон і вигляд", "FTP", \
+    "Оновлення"
+TABS = (TAB_DOWNLOADS, TAB_BACKGROUND, TAB_FTP, TAB_UPDATES)
+FOCUS_TABS = {"ftp": TAB_FTP, "updates": TAB_UPDATES}
+TITLE_BAR = 48          # заголовок вікна Windows і запас до краю екрана, справжні пікселі
 
 
 def _label_for(options, value, default=0):
@@ -46,8 +51,7 @@ class SettingsDialog(ctk.CTkToplevel):
         # потім розросталось до повного й переїжджало. Покаже _show().
         self.withdraw()
         self.on_change = on_change
-        self._focus = focus             # розділ, до якого прокрутити при відкритті ("ftp")
-        self._cards = {}
+        self._focus = focus             # вкладка, з якої відкрити ("ftp", "updates")
         self.title("Налаштування — R-TubeUA")
         self.configure(fg_color=uikit.SURFACE_SUNKEN)
         # Не self.resizable(): у CTkToplevel він ще раз ховає й показує вікно,
@@ -57,22 +61,31 @@ class SettingsDialog(ctk.CTkToplevel):
         uikit.apply_window_icon(self)
         self.grid_columnconfigure(0, weight=1)
 
-        # Розділи — у прокручуваній області: усе разом ~880 px заввишки й на
-        # ноутбуці 1366×768 (чи Full HD зі 125%) не влізло б, сховавши «Готово».
-        self.body = ctk.CTkScrollableFrame(self, fg_color="transparent", width=660)
-        self.body.grid(row=0, column=0, sticky="nsew")
-        self.body.grid_columnconfigure(0, weight=1)
+        # Вкладки: усе одним стовпчиком було ~1300 px заввишки й не влазило навіть
+        # на 1440 px, а на ноутбуці — тим паче. Кожна вкладка — прокручувана
+        # сторінка однакової висоти (див. _fit_height), тож вікно не стрибає.
+        self.seg_tabs = ctk.CTkSegmentedButton(self, values=list(TABS), font=FONT_UI_BOLD,
+                                               selected_color=GREEN,
+                                               selected_hover_color=GREEN_HOVER,
+                                               command=self._select_tab)
+        self.seg_tabs.grid(row=0, column=0, sticky="w", padx=22, pady=(16, 4))
+        self._pages = {}
+        for name in TABS:
+            page = ctk.CTkScrollableFrame(self, fg_color="transparent", width=660)
+            page.grid_columnconfigure(0, weight=1)
+            self._pages[name] = page
 
         self._vars = {}
-        row = 0
-        row = self._section(row, "Завантаження", self._build_downloads)
-        row = self._section(row, "Робота у фоні", self._build_background)
-        row = self._section(row, "Заливання на FTP", self._build_ftp)
-        row = self._section(row, "Оновлення", self._build_updates)
-        row = self._section(row, "Вигляд", self._build_look)
+        self._section(TAB_DOWNLOADS, 0, "Завантаження", self._build_downloads)
+        self._section(TAB_BACKGROUND, 0, "Робота у фоні", self._build_background)
+        self._section(TAB_BACKGROUND, 1, "Вигляд", self._build_look)
+        self._section(TAB_FTP, 0, "Заливання на FTP", self._build_ftp)
+        self._section(TAB_UPDATES, 0, "Оновлення", self._build_updates)
+        start = FOCUS_TABS.get(focus) or (TAB_UPDATES if self.updates_pending() else TAB_DOWNLOADS)
+        self._select_tab(start)
 
         footer = ctk.CTkFrame(self, fg_color="transparent")
-        footer.grid(row=1, column=0, sticky="ew", padx=22, pady=(4, 18))
+        footer.grid(row=2, column=0, sticky="ew", padx=22, pady=(4, 18))
         uikit.SecondaryButton(footer, text="📁 Тека налаштувань і логів",
                               command=self._open_config_dir).pack(side="left")
         uikit.SecondaryButton(footer, text="Скинути до стандартних",
@@ -89,17 +102,31 @@ class SettingsDialog(ctk.CTkToplevel):
             return None
         return super().iconbitmap(bitmap, default)
 
-    def _fit_height(self):
-        """Висота прокручуваної області — уся, якщо влазить, інакше до краю екрана."""
-        self.update_idletasks()
+    def _scale(self):
+        """Скільки справжніх пікселів в одиниці CTk: DPI Windows × масштаб програми."""
         try:
-            scale = self._get_window_scaling()
+            return ctk.ScalingTracker.get_widget_scaling(self)
         except Exception:
-            scale = 1.0
-        inner = sum(w.winfo_reqheight() for w in self.body.winfo_children()) / scale + 60
-        _w, screen_h = uikit.work_area()
-        available = (screen_h / scale if screen_h else 760) - 210    # заголовок вікна, кнопки внизу, запас
-        self.body.configure(height=max(300, min(inner, available)))
+            return 1.0
+
+    def _fit_height(self):
+        """Сторінки — заввишки з найвищу вкладку, але так, щоб усе вікно разом із
+        заголовком і «Готово» влізло в робочу область екрана. Що не влізло —
+        прокручується всередині вкладки."""
+        self.update_idletasks()
+        scale = self._scale()
+        content = max(page.winfo_reqheight() for page in self._pages.values()) / scale + 8
+        for page in self._pages.values():
+            page.configure(height=content)
+        self.update_idletasks()
+        _l, _t, _w, work_h = uikit.work_rect()
+        if work_h:
+            over = self.winfo_reqheight() - (work_h - TITLE_BAR)
+            if over > 0:
+                fitted = max(160, content - over / scale)
+                for page in self._pages.values():
+                    page.configure(height=fitted)
+                self.update_idletasks()
 
     def _show(self):
         """Розмір і місце — поки вікно сховане, і лише тоді показ: один раз,
@@ -111,6 +138,11 @@ class SettingsDialog(ctk.CTkToplevel):
             # Поки вікно сховане, winfo_width() дає 1 — беремо запитаний розмір.
             x = master.winfo_rootx() + (master.winfo_width() - self.winfo_reqwidth()) // 2
             y = master.winfo_rooty() + 40
+            # Не нижче краю робочої області: інакше «Готово» опинялось за екраном.
+            left, top, width, height = uikit.work_rect()
+            if height:
+                y = max(top, min(y, top + height - self.winfo_reqheight() - TITLE_BAR))
+                x = max(left, min(x, left + width - self.winfo_reqwidth()))
             # Сирий tk-geometry: позиція в справжніх пікселях, як і winfo_root*.
             tkinter.Toplevel.geometry(self, f"+{max(0, x)}+{max(0, y)}")
         except Exception as exc:
@@ -131,14 +163,19 @@ class SettingsDialog(ctk.CTkToplevel):
             self.focus_set()
         except Exception:
             pass
-        if self._focus in self._cards:
-            self.after(50, lambda: self._scroll_to(self._cards[self._focus]))
-        elif self.updates_pending():
-            self.after(50, lambda: self._scroll_to(self._updates_card))
+
+    def _select_tab(self, name):
+        for tab, page in self._pages.items():
+            if tab == name:
+                page.grid(row=1, column=0, sticky="nsew")
+            else:
+                page.grid_remove()
+        self.seg_tabs.set(name)
+        self.tab = name
 
     # ── побудова ──
-    def _section(self, row, title, builder):
-        card = uikit.Card(self.body, title=title)
+    def _section(self, tab, row, title, builder):
+        card = uikit.Card(self._pages[tab], title=title)
         card.grid(row=row, column=0, sticky="ew", padx=22, pady=(16 if row == 0 else 0, 10))
         body = ctk.CTkFrame(card, fg_color="transparent")
         body.grid(row=card.body_row, column=0, sticky="ew", padx=16, pady=(0, 12))
@@ -214,7 +251,6 @@ class SettingsDialog(ctk.CTkToplevel):
                     "(від двох товарів), не для одного відео.")
 
     def _build_ftp(self, body):
-        self._cards["ftp"] = body.master
         login = self.master.ftp_login
         self.ftp_host = ctk.StringVar(value=login.get("host", ""))
         self.ftp_user = ctk.StringVar(value=login.get("user", ""))
@@ -392,7 +428,6 @@ class SettingsDialog(ctk.CTkToplevel):
                                         text_color=uikit.TEXT_MUTED)
         self.lbl_restart.grid(row=1, column=0, sticky="w", pady=(2, 0))
         self.update_line.grid_remove()
-        self._updates_card = body.master
         self.refresh_updates()
 
     def _build_look(self, body):
@@ -505,16 +540,6 @@ class SettingsDialog(ctk.CTkToplevel):
             pass
         self.destroy()
         app.after_idle(app.restart)
-
-    def _scroll_to(self, card):
-        """Прокрутити до картки: готове оновлення, вхід на FTP — видно одразу."""
-        try:
-            self.update_idletasks()
-            # Сам CTkScrollableFrame — внутрішня рамка в canvas, заввишки з увесь вміст.
-            height = self.body.winfo_height() or 1
-            self.body._parent_canvas.yview_moveto(card.winfo_y() / height)
-        except Exception:
-            pass
 
     def _open_config_dir(self):
         os.makedirs(settings.CONFIG_DIR, exist_ok=True)

@@ -313,17 +313,23 @@ COMFORT_SIZE = (1000, 800)
 MIN_SCALE = 0.8
 
 
-def work_area():
-    """Робоча область екрана в справжніх пікселях, без панелі задач."""
+def work_rect():
+    """Робоча область основного екрана в справжніх пікселях, без панелі задач:
+    (ліво, верх, ширина, висота); нулі — не вдалося дізнатися."""
     try:
         import ctypes
         import ctypes.wintypes
         rect = ctypes.wintypes.RECT()
         if ctypes.windll.user32.SystemParametersInfoW(0x0030, 0, ctypes.byref(rect), 0):
-            return rect.right - rect.left, rect.bottom - rect.top
+            return rect.left, rect.top, rect.right - rect.left, rect.bottom - rect.top
     except Exception:
         pass
-    return 0, 0
+    return 0, 0, 0, 0
+
+
+def work_area():
+    """Розмір робочої області екрана в справжніх пікселях, без панелі задач."""
+    return work_rect()[2:]
 
 
 def fit_scaling(dpi_scale):
