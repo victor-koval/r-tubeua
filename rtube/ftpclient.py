@@ -250,9 +250,11 @@ class FtpClient:
                 offset = ftp.size(temp_path) or 0
             except ftplib.error_perm:
                 offset = 0
-            if offset >= total:
+            if offset > total:
                 offset = 0
             sent[0] = offset
+            if offset and offset == total:
+                return      # тимчасовий уже повний (обірвалось перед перейменуванням)
             with open(local, "rb") as fh:
                 fh.seek(offset)
                 ftp.storbinary(f"STOR {temp_path}", fh, BLOCK, on_block, rest=offset or None)

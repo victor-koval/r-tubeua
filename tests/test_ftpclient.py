@@ -82,6 +82,13 @@ class ClientTest(unittest.TestCase):
                                               len(half)))
         self.assertEqual(self.server.files["/video/tegi/590312170.mp4"], self.data())
 
+    def test_full_leftover_part_only_renamed(self):
+        """Тимчасовий уже повний (обірвалось перед перейменуванням) — не заливаємо з нуля."""
+        self.server.files["/video/tegi/590312170.mp4.rtube-part"] = self.data()
+        self.client.upload(self.local, ["video", "tegi"], "590312170.mp4")
+        self.assertEqual([e for e in self.server.log if e[0] == "STOR"], [])
+        self.assertEqual(self.server.files["/video/tegi/590312170.mp4"], self.data())
+
     def test_no_space(self):
         self.server.limits["/video"] = 100 * 1024
         with self.assertRaises(ftpclient.NoSpace):

@@ -9,6 +9,7 @@ import collections
 import itertools
 import os
 import queue
+import re
 import threading
 import time
 from dataclasses import dataclass, field
@@ -276,7 +277,11 @@ class UploadManager:
                 task.state, task.note = CANCELLED, "Скасовано"
                 return
             except ftpclient.Exists:
+                # Недолите з минулого запуску плану не проходить: файл міг
+                # дозалитись перед закриттям — той самий розмір, тож «уже на FTP».
                 task.state, task.note = CONFIRM, "На FTP інший файл з таким ім'ям — замінити?"
+                self._files.pop("/".join(folder), None)
+                self._check_existing(task)
                 return
             except ftpclient.MissingFolder:
                 if reread:
@@ -372,7 +377,9 @@ def describe_batch(progress):
 def human_error(exc):
     text = str(exc)
     low = text.lower()
-    if "530" in low or "login" in low and "fail" in low:
+    # 530 — лише як код відповіді сервера (на початку чи після «…: »): у тексті
+    # бувають ID товару й розміри, і «590530123.mp4» не означає хибний пароль.
+    if re.search(r"(?:^|: )530\b", text) or "login" in low and "fail" in low:
         return "FTP не пускає: невірний логін чи пароль"
     if "getaddrinfo" in low or "timed out" in low or "refused" in low:
         return "Немає з'єднання з FTP-сервером"
