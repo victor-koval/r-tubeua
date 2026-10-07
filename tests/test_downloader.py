@@ -136,7 +136,7 @@ class IdTargetTest(unittest.TestCase):
     def pick(self, url=URL, height=720):
         path, action = downloader.pick_id_target(
             self.tmp.name, "590312170", "mp4", url, height,
-            comment_of=lambda p: self.files[p][0], height_of=lambda p: self.files[p][1])
+            probe=lambda p: {"comment": self.files[p][0], "quality": self.files[p][1]})
         return os.path.basename(path), action
 
     def test_free(self):
@@ -370,6 +370,37 @@ class QueueTest(unittest.TestCase):
         self.manager.cancel(job)
         self.assertEqual(self.events_until(job, ("cancelled", "queued"))[-1][1][0], "cancelled")
 
+    def test_info_released_when_finished(self):
+        def run(job):
+            if job.title == "bad":
+                raise downloader.DownloadError("Private video")
+            return "Готово"
+
+        self.use_runner(run)
+        good = downloader.Job(url="g", title="good", out_dir=".", info={"duration": 207})
+        bad = downloader.Job(url="b", title="bad", out_dir=".", info={"duration": 15})
+        self.manager.submit(good)
+        self.manager.submit(bad)
+        self.events_until(good, ("done",))
+        self.events_until(bad, ("error",))
+        for job, seconds in ((good, 207), (bad, 15)):
+            self.assertIsNone(job.info)
+            self.assertEqual(job.duration, seconds)     # тривалість лишилась для списку й звіту
+        self.assertIsNone(good.clone().info)            # «Повторити» проаналізує заново
+
+    def test_info_kept_on_pause(self):
+        def run(job):
+            job.cancel_event.wait(5)
+            raise downloader.Cancelled()
+
+        self.use_runner(run)
+        job = downloader.Job(url="u", title="t", out_dir=".", info={"duration": 5})
+        self.manager.submit(job)
+        self.events_until(job, ("running",))
+        self.manager.pause()
+        self.events_until(job, ("queued",))
+        self.assertIsNotNone(job.info)
+
     def test_batch_gap(self):
         with mock.patch.object(downloader, "BATCH_GAP", 0.3):
             job = downloader.Job(url="u", title="t", out_dir=".", prefs={"max_height": 720})
@@ -381,6 +412,17 @@ class QueueTest(unittest.TestCase):
             started = time.monotonic()
             self.manager._throttle(single)
             self.assertLess(time.monotonic() - started, 0.1)
+
+class InfoCacheTest(unittest.TestCase):
+    def test_stale_entries_dropped(self):
+        cache = {"old": (time.monotonic() - downloader.INFO_TTL - 1, {"title": "old"}),
+                 "fresh": (time.monotonic(), {"title": "fresh"})}
+        job = downloader.Job(url="new", title="new", out_dir=".", video_key=(720,),
+                             audio_lang="", sub_key=())
+        with mock.patch.object(downloader, "analyze", return_value={"title": "new"}):
+            downloader._Runner(job, lambda *a: None, info_cache=cache)._prepare()
+        self.assertEqual(set(cache), {"fresh", "new"})
+
 
 class QuietCancelLogTest(unittest.TestCase):
     def test_errors_after_cancel_are_info(self):

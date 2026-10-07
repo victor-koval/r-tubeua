@@ -225,42 +225,6 @@ def final_ext(info, fmt, job):
     return f.get("ext") or job.container
 
 
-def probe_quality(path):
-    """Якість відео у файлі («1080» для 1920×1080 і для вертикального
-    1080×1920) — та сама міра, що й video_key[0]. None — не вдалося дізнатися."""
-    ffprobe = tools.find_ffprobe()
-    if not ffprobe:
-        return None
-    try:
-        out = subprocess.run(
-            [ffprobe, "-v", "error", "-select_streams", "v:0", "-show_entries",
-             "stream=width,height", "-of", "csv=p=0", path],
-            capture_output=True, text=True, timeout=20,
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0)).stdout.strip()
-        if not out:
-            return None
-        width, height = (int(x) for x in out.splitlines()[0].split(",")[:2])
-        return formats.quality_of(width, height)
-    except Exception:
-        return None
-
-
-def probe_comment(path):
-    """Коментар файлу (туди пишемо посилання на ролик) або None."""
-    ffprobe = tools.find_ffprobe()
-    if not ffprobe:
-        return None
-    try:
-        out = subprocess.run(
-            [ffprobe, "-v", "error", "-show_entries", "format_tags=comment",
-             "-of", "default=nw=1:nk=1", path],
-            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=20,
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0)).stdout.strip()
-        return out or None
-    except Exception:
-        return None
-
-
 def probe_file(path):
     """Коментар (посилання на ролик), якість і тривалість — одним запуском
     ffprobe. Порожній словник — не вдалося дізнатися."""
@@ -292,8 +256,7 @@ def probe_file(path):
 MAX_ID_SUFFIX = 99
 
 
-def pick_id_target(out_dir, product_id, ext, url, height,
-                   comment_of=probe_comment, height_of=probe_quality):
+def pick_id_target(out_dir, product_id, ext, url, height, probe=probe_file):
     """Куди качати ролик для товару: (шлях, дія).
 
     дія «new» — файлу немає; «skip» — цей самий ролик тієї ж якості вже є;
@@ -307,8 +270,9 @@ def pick_id_target(out_dir, product_id, ext, url, height,
         path = os.path.join(out_dir, f"{name}.{ext}")
         if not os.path.isfile(path):
             return path, "new"
-        if comment_of(path) == url:
-            if height is None or height_of(path) == height:
+        found = probe(path)
+        if found.get("comment") == url:
+            if height is None or found.get("quality") == height:
                 return path, "skip"
             return path, "overwrite"
     raise DownloadError(f"Для товару {product_id} уже {MAX_ID_SUFFIX} різних відео в теці")
@@ -455,6 +419,17 @@ def is_rate_limited(exc):
         ("sign in to confirm you" in low and "bot" in low)
 
 
+def release_info(job):
+    """Завдання завершилось — повна відповідь YouTube (формати, автосубтитри
+    на ~180 мов) йому вже не потрібна, а на каналі в сотні відео вона з'їдала
+    б сотні МБ. Лишаємо тривалість (назва вже в job.title); «Повторити»
+    проаналізує ролик заново. Спершу duration, потім info: вікно читає їх
+    з іншого потоку (jobs.job_duration)."""
+    if job.info is not None:
+        job.duration = (job.info or {}).get("duration") or job.duration
+        job.info = None
+
+
 class DownloadManager:
     """Одне завантаження за раз, решта чекає в черзі.
 
@@ -540,6 +515,7 @@ class DownloadManager:
         while True:
             job = self._next()
             if job.cancel_event.is_set():
+                release_info(job)       # скасоване ще в черзі
                 continue
             job.state = "running"
             self._running = job
@@ -556,6 +532,8 @@ class DownloadManager:
                                throttle=self._throttle, on_network=self._touch_network).run()
             except Cancelled:
                 self._stopped(job)
+                if job.state == "cancelled":
+                    release_info(job)
                 return
             except Exception as exc:
                 if is_rate_limited(exc) and attempt < len(RATE_LIMIT_WAITS):
@@ -565,12 +543,16 @@ class DownloadManager:
                     if self._sleep(job, wait, "YouTube обмежив запити — повтор через {}"):
                         continue
                     self._stopped(job)
+                    if job.state == "cancelled":
+                        release_info(job)
                     return
                 job.state = "error"
+                release_info(job)
                 applog.error(f"Завантаження «{job.title}» ({job.url}) не вдалося", exc)
                 self._emit("state", job, "error", humanize_error(exc))
                 return
             job.state = "done"
+            release_info(job)
             if job.filepath and os.path.isfile(job.filepath):
                 self._done_files[same_video_key(job)] = job.filepath
                 if self._on_done:
@@ -824,7 +806,11 @@ class _Runner:
                     job.info = analyze(job.url)
                 finally:
                     self.on_network()
-                self.info_cache[job.url] = (time.monotonic(), job.info)
+                now = time.monotonic()
+                for url, (stamp, _info) in list(self.info_cache.items()):
+                    if now - stamp >= INFO_TTL:
+                        del self.info_cache[url]
+                self.info_cache[job.url] = (now, job.info)
             job.title = job.info.get("title") or job.title
         if job.video_key is None or job.audio_lang is None or job.sub_key is None:
             apply_prefs(job, job.info)
@@ -1001,7 +987,7 @@ class _Runner:
         """Чи наявний файл тієї якості, яку просять зараз."""
         if self.job.audio_only:
             return True     # ім'я й розширення ті самі — це той самий звук
-        return probe_quality(path) == self.job.video_key[0]
+        return probe_file(path).get("quality") == self.job.video_key[0]
 
     def _check_disk_space(self):
         need = needed_bytes(self.part_sizes.values())
