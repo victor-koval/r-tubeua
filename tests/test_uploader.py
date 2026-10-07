@@ -76,6 +76,18 @@ class BatchProgressTest(unittest.TestCase):
         self.assertIsNone(uploader.batch_progress([skipped]))
 
 
+class HumanErrorTest(unittest.TestCase):
+    def test_login_only_by_reply_code(self):
+        wrong = "FTP не пускає: невірний логін чи пароль"
+        self.assertEqual(uploader.human_error(Exception("530 Login authentication failed")), wrong)
+        self.assertEqual(uploader.human_error(Exception("Не вдалося залити 1.mp4: 530 Not logged in")),
+                         wrong)
+        # «530» у ID товару чи розмірі — не код відповіді сервера.
+        for text in ("590530123.mp4: на FTP 1000 байт замість 2000",
+                     "123.mp4: на FTP 15301234 байт замість 15301240"):
+            self.assertEqual(uploader.human_error(Exception(text)), text)
+
+
 class BaseTest(unittest.TestCase):
     """Вшита база + свій шар."""
 
@@ -310,6 +322,28 @@ class ManagerTest(unittest.TestCase):
         task = uploader.UploadTask(local, "590312170")
         self.manager.plan([task])
         self.wait(task, (uploader.ALREADY,))
+
+    def test_restored_task_already_uploaded_is_not_confirm(self):
+        """Недолите з минулого запуску (без плану) встигло залитись перед закриттям:
+        той самий розмір — «уже на FTP», а не «замінити?»."""
+        local = self.file()
+        with open(local, "rb") as f:
+            self.server.files["/video/odyag_vzuttya_ta_aksesuari/odyag/590312170.mp4"] = f.read()
+        task = uploader.UploadTask(local, "590312170", section="video",
+                                   path=("odyag_vzuttya_ta_aksesuari", "odyag"),
+                                   state=uploader.PLANNED)
+        self.manager.upload([task])
+        self.wait(task, (uploader.ALREADY,))
+        self.assertEqual(ftpstate.pending(), [])
+
+    def test_restored_task_other_file_needs_confirm(self):
+        local = self.file()
+        self.server.files["/video/odyag_vzuttya_ta_aksesuari/odyag/590312170.mp4"] = b"other"
+        task = uploader.UploadTask(local, "590312170", section="video",
+                                   path=("odyag_vzuttya_ta_aksesuari", "odyag"),
+                                   state=uploader.PLANNED)
+        self.manager.upload([task])
+        self.wait(task, (uploader.CONFIRM,))
 
     def test_cancel_queued(self):
         task = uploader.UploadTask(self.file(), "590312170", path=("x",), section="video",
