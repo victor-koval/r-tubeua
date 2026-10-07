@@ -252,6 +252,16 @@ a.open_settings(section="ftp"); pump()
 d = a._settings_window
 check(d.ftp_user.get() == "u", "вхід FTP у Налаштуваннях")
 check(d.tab == "FTP", "Налаштування відкрито на вкладці FTP")
+# розділи — прапорцями; останній зняти не можна
+check(list(d.ftp_section_vars) == ["video", "video2", "video3", "video4", "video5"],
+      "п'ять прапорців розділів")
+for _name in ("video2", "video3", "video4", "video5"):
+    d.ftp_section_vars[_name].set(False); d._toggle_section(_name)
+d.ftp_section_vars["video"].set(False); d._toggle_section("video")
+check(d.ftp_section_vars["video"].get() and "Хоча б один" in d.lbl_sections.cget("text"),
+      "останній розділ не знімається")
+for _name in ("video2", "video3", "video4", "video5"):
+    d.ftp_section_vars[_name].set(True); d._toggle_section(_name)
 # Ctrl+V/C на будь-якій розкладці — для всіх полів (клас Entry), і в Налаштуваннях
 from types import SimpleNamespace
 from rtube import uikit as _u

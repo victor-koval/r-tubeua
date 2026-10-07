@@ -24,6 +24,12 @@ class SaveTest(unittest.TestCase):
             p.stop()
         self.tmp.cleanup()
 
+    def test_ftp_sections_known_and_ordered(self):
+        settings.set_many(ftp_sections="video4, video, vidoe3, /video2/")
+        self.assertEqual(settings.ftp_sections(), ["video", "video2", "video4"])
+        settings.set_many(ftp_sections="щось не те")
+        self.assertEqual(settings.ftp_sections(), list(settings.FTP_SECTIONS))
+
     def test_failed_write_keeps_old_file(self):
         settings.set_many(theme="Світла")
         with mock.patch.object(settings.json, "dump", side_effect=OSError("disk full")):

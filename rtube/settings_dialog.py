@@ -272,14 +272,23 @@ class SettingsDialog(ctk.CTkToplevel):
         self._hint(body, 4, "Без цього сервер, логін і пароль живуть лише до закриття програми. "
                             "Пароль зберігається в Диспетчері облікових даних Windows, "
                             "не у файлах програми.", indent=True)
-        self._label(body, 5, "Розділи по черзі")
-        self.ftp_sections = ctk.StringVar(value=settings.get("ftp_sections"))
-        ctk.CTkEntry(body, textvariable=self.ftp_sections, width=300, font=FONT_UI).grid(
-            row=5, column=1, sticky="w", pady=4)
-        self.ftp_sections.trace_add(
-            "write", lambda *_: settings.set_many(ftp_sections=self.ftp_sections.get()))
-        self._hint(body, 6, "Коли розділ забитий («недостатньо місця»), файл іде в наступний. "
-                            "У корінь розділу програма не кладе нічого.")
+        # Прапорці, а не текст: вписати неіснуючий розділ чи переплутати порядок не можна.
+        self._label(body, 5, "Розділи")
+        boxes = ctk.CTkFrame(body, fg_color="transparent")
+        boxes.grid(row=5, column=1, sticky="w", pady=4)
+        chosen = set(settings.ftp_sections())
+        self.ftp_section_vars = {}
+        for i, name in enumerate(settings.FTP_SECTIONS):
+            var = ctk.BooleanVar(value=name in chosen)
+            ctk.CTkCheckBox(boxes, text=name, variable=var, width=60, font=FONT_UI,
+                            command=lambda n=name: self._toggle_section(n)).grid(
+                row=0, column=i, padx=(0, 10))
+            self.ftp_section_vars[name] = var
+        self.lbl_sections = ctk.CTkLabel(body, text="", font=FONT_SMALL, anchor="w",
+                                         justify="left", wraplength=540,
+                                         text_color=uikit.TEXT_MUTED)
+        self.lbl_sections.grid(row=6, column=0, columnspan=2, sticky="w", pady=(0, 4))
+        self._sections_hint()
         line = ctk.CTkFrame(body, fg_color="transparent")
         line.grid(row=7, column=0, columnspan=2, sticky="w", pady=(6, 0))
         self.btn_ftp_check = uikit.SecondaryButton(line, text="Перевірити вхід", width=160,
@@ -308,6 +317,25 @@ class SettingsDialog(ctk.CTkToplevel):
         self.lbl_history = ctk.CTkLabel(line, text="", font=FONT_SMALL, text_color=uikit.TEXT_MUTED)
         self.lbl_history.pack(side="left", padx=(12, 0))
         self._poll_history()
+
+    def _toggle_section(self, name):
+        chosen = [s for s, var in self.ftp_section_vars.items() if var.get()]
+        if not chosen:                      # без жодного розділу заливати нікуди
+            self.ftp_section_vars[name].set(True)
+            self._sections_hint(warn="Хоча б один розділ має лишитися відміченим.")
+            return
+        settings.set_many(ftp_sections=", ".join(chosen))
+        self._sections_hint()
+
+    def _sections_hint(self, warn=None):
+        if warn:
+            self.lbl_sections.configure(text=warn, text_color=uikit.STATE_WARN)
+            return
+        order = " → ".join(settings.ftp_sections())
+        self.lbl_sections.configure(
+            text=f"Заливається по черзі: {order}. Коли розділ забитий («недостатньо місця»), "
+                 "файл іде в наступний. У корінь розділу програма не кладе нічого.",
+            text_color=uikit.TEXT_MUTED)
 
     def _hint(self, body, row, text, indent=False):
         ctk.CTkLabel(body, text=text, font=FONT_SMALL, text_color=uikit.TEXT_MUTED, anchor="w",
@@ -553,7 +581,10 @@ class SettingsDialog(ctk.CTkToplevel):
         for key in settings.USER_KEYS:
             self.on_change(key, settings.get(key))
         self.dir_var.set(settings.get("download_dir"))
-        self.ftp_sections.set(settings.get("ftp_sections"))
+        chosen = set(settings.ftp_sections())
+        for name, var in self.ftp_section_vars.items():
+            var.set(name in chosen)
+        self._sections_hint()
         for key, (widget, options) in self._vars.items():
             value = settings.get(key)
             if options is not None:

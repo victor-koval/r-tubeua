@@ -66,7 +66,7 @@ DEFAULTS = {
     "ftp_remember": False,
     "ftp_host": "",
     "ftp_user": "",
-    "ftp_sections": "video, video2, video3, video4, video5",   # черговість розділів
+    "ftp_sections": "video, video2, video3, video4, video5",   # у які розділи можна заливати
     "app_bad": [],             # версії програми, що не пройшли самоперевірку
     "geometry": "",
     "window_pos": "",          # де закрили вікно: «x,y» у справжніх пікселях
@@ -79,6 +79,17 @@ USER_KEYS = ("download_dir", "max_height", "container", "audio_container", "pref
              "keep_original", "subs_mode", "theme", "notify_done", "taskbar_progress",
              "resume_queue", "auto_report", "check_updates_on_start", "watch_clipboard",
              "ftp_sections")
+
+# Розділи FTP — у цьому порядку: забитий — далі наступний відмічений.
+FTP_SECTIONS = ("video", "video2", "video3", "video4", "video5")
+
+
+def ftp_sections():
+    """Відмічені розділи FTP у сталому порядку; лише відомі, хоча б один."""
+    raw = get("ftp_sections") or ""
+    chosen = {s.strip().strip("/") for s in raw.replace(";", ",").split(",")}
+    return [s for s in FTP_SECTIONS if s in chosen] or list(FTP_SECTIONS)
+
 
 _lock = threading.Lock()
 _cache = None
