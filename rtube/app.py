@@ -75,7 +75,6 @@ class RTubeApp(ctk.CTk, *_DND_BASES):
         self.uploads = uploader.UploadManager(self._ftp_connect, self.ftp_sections)
         self.ftp_tasks = {}                  # task.id → UploadTask
         self.history = None                  # ftphistory.HistoryBuilder, коли оновлюють базу
-        self._tree_callbacks = []            # хто чекає на перечитане дерево тек
         self.upload_batch = []               # завдання поточного заливання (загальний прогрес)
         self._uploading = False              # чи йшло заливання на минулому опитуванні
         self.ftp_by_job = {}                 # job.id → UploadTask
@@ -826,10 +825,11 @@ class RTubeApp(ctk.CTk, *_DND_BASES):
         """Перечитати теки розділів (у фоні) і заново визначити ще не залиті.
         on_done(помилка або None) — у потоці вікна, коли закінчено."""
         if not self.ftp_ready():
+            if on_done:
+                on_done("вкажіть вхід на FTP у Налаштуваннях")
             self.open_settings(section="ftp")
             return
         sections = sections or self.ftp_sections()
-        self._tree_callbacks.append(on_done)
 
         def work():
             try:
@@ -839,15 +839,16 @@ class RTubeApp(ctk.CTk, *_DND_BASES):
                 finally:
                     client.close()
                 ftpstate.save_tree(tree)
-                self.ui_events.put(("ftp_tree", sum(len(p) for p in tree.values()), None))
+                self.ui_events.put(("ftp_tree", sum(len(p) for p in tree.values()), None, on_done))
             except Exception as exc:
                 applog.error("Дерево тек FTP не прочиталось", exc)
-                self.ui_events.put(("ftp_tree", None, uploader.human_error(exc)))
+                self.ui_events.put(("ftp_tree", None, uploader.human_error(exc), on_done))
 
         threading.Thread(target=work, daemon=True).start()
 
-    def _ftp_tree_read(self, count, error):
-        callback = self._tree_callbacks.pop(0) if self._tree_callbacks else None
+    def _ftp_tree_read(self, count, error, callback):
+        # Колбек їде разом із подією: два перечитування поспіль закінчуються
+        # в будь-якому порядку, і черга колбеків віддала б не той.
         if callback:
             callback(error)
         if error:
@@ -993,7 +994,7 @@ class RTubeApp(ctk.CTk, *_DND_BASES):
                     self.statusbar.show_update_ready()
                     self.show_update_badge()
                 elif kind == "ftp_tree":
-                    self._ftp_tree_read(event[1], event[2])
+                    self._ftp_tree_read(*event[1:])
         except queue.Empty:
             pass
 

@@ -605,7 +605,8 @@ class JobsPanel(uikit.Card):
         already = any(filter_matches(j, FILTER_ALREADY) for j in jobs)
         ftp_used = any(j.ftp_state for j in jobs)
         not_uploaded = ftp_used and any(ftp_candidate(j) for j in jobs)
-        values = [FILTER_ALL, FILTER_FAILED, FILTER_ALREADY] +             ([FILTER_NOT_UPLOADED] if ftp_used else [])
+        values = [FILTER_ALL, FILTER_FAILED, FILTER_ALREADY] + \
+            ([FILTER_NOT_UPLOADED] if ftp_used else [])
         if values != self._filter_values:
             self._filter_values = values
             self.seg_filter.configure(values=values)
