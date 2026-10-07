@@ -187,7 +187,7 @@ def save_index():
 
 
 def index_size(section):
-    """Скільки товарів у історії розділу (база + свої)."""
+    """Скільки відео в історії розділу (база + свої)."""
     return index(section).get(COUNT, 0)
 
 

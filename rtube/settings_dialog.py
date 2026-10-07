@@ -294,7 +294,7 @@ class SettingsDialog(ctk.CTkToplevel):
         self.lbl_base = ctk.CTkLabel(body, text="", font=FONT_UI, anchor="w", justify="left",
                                      wraplength=560)
         self.lbl_base.grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 4))
-        self._hint(body, 1, "Це теки на FTP і те, куди ви вже клали товари: за цим програма "
+        self._hint(body, 1, "Це теки на FTP і те, куди ви вже клали відео (за категорією товару): за цим програма "
                             "обирає теку. База вшита в програму й оновлюється з кожним "
                             "релізом. Оновлювати вручну не обов'язково — лише якщо на FTP "
                             "з'явились нові теки або програма часто помиляється з текою. "
@@ -322,7 +322,7 @@ class SettingsDialog(ctk.CTkToplevel):
         when = f" (станом на {time.strftime('%d.%m.%Y', time.localtime(age))})" if age else ""
         if not sizes:
             return "Бази розкладання ще немає — програма обиратиме теку лише за назвою."
-        return f"Програма знає, куди ви клали товари: {', '.join(sizes)}{when}."
+        return f"Програма знає, куди ви клали відео: {', '.join(sizes)}{when}."
 
     def _toggle_history(self):
         app = self.master

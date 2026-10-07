@@ -256,7 +256,7 @@ class FolderPicker(ctk.CTkToplevel):
         bottom.grid(row=4, column=0, sticky="ew", padx=16, pady=(0, 14))
         bottom.grid_columnconfigure(0, weight=1)
         self.remember = ctk.BooleanVar(value=bool(task.mpath))
-        ctk.CTkCheckBox(bottom, text="Запам'ятати для цієї категорії товарів",
+        ctk.CTkCheckBox(bottom, text="Запам'ятати: відео товарів цієї категорії — сюди",
                         variable=self.remember, font=FONT_SMALL,
                         state="normal" if task.mpath else "disabled").grid(row=0, column=0,
                                                                           sticky="w")
