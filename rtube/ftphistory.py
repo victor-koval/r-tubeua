@@ -1,11 +1,11 @@
 """Історія розкладання: куди люди вже клали товари на FTP — щоб класти так само.
 
-Для файлів «ID.mp4», що вже лежать у теках розділу, беремо категорію товару
+Для відео «ID.mp4», що вже лежать у теках розділу, беремо категорію товару
 на сайті (rozetka.mpath) і записуємо в ftpstate: «категорія → тека». Потім
 ftpcat.history_lookup підставляє теку, куди найчастіше клали таку категорію,
 — так програма сама переймає домовленості (біжутерія → prikrasi тощо).
 
-Повний обхід — це запит до сайту на кожен товар, а в розділах десятки тисяч
+Повний обхід — це запит до сайту на кожне відео, а в розділах десятки тисяч
 файлів. Для голосування досить вибірки: до SAMPLE_PER_FOLDER файлів з теки.
 Оброблені ID пам'ятаються (ftpstate.seen, разом із вшитою базою), тож
 «Оновити базу» питає сайт лише про нові файли, і її можна зупинити й продовжити.
@@ -102,8 +102,8 @@ class HistoryBuilder:
                         ftpstate.learn(section, mpath, path, save=False)
                     done.add(pid)
                     fresh.append(pid)
-                    self.status["text"] = (f"{section}: {i} з {len(todo)} · у історії "
-                                           f"{ftpstate.index_size(section)} товарів")
+                    self.status["text"] = (f"{section}: {i} з {len(todo)} · у базі "
+                                           f"{ftpstate.index_size(section)} відео")
                     if i % 50 == 0:
                         ftpstate.mark_seen(section, fresh)
                         fresh = []
@@ -114,7 +114,7 @@ class HistoryBuilder:
             stopped = self._cancel.is_set()
             sizes = ", ".join(f"{s}: {ftpstate.index_size(s)}" for s in self._sections)
             self.status["text"] = ("Зупинено — продовжиться з того місця. " if stopped else
-                                   "Готово. ") + f"У історії товарів — {sizes}"
+                                   "Готово. ") + f"У базі відео — {sizes}"
         except Exception as exc:
             applog.error("Збір історії FTP не вдався", exc)
             self.status["error"] = str(exc)
