@@ -7,7 +7,7 @@ import time
 import unittest
 from unittest import mock
 
-from rtube import downloader, formats
+from rtube import downloader, formats, tools
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
@@ -165,6 +165,42 @@ class IdTargetTest(unittest.TestCase):
         args = downloader.track_metadata_args(INFO, "137+140-19", source_url=self.URL)
         self.assertEqual(args[:2], ["-metadata", f"comment={self.URL}"])
         self.assertNotIn("comment=", " ".join(downloader.track_metadata_args(INFO, "137+140-19")))
+
+    def test_unmerged_file_gets_comment_pp(self):
+        """Лише звук (m4a/mp3) не склеюється — посилання в коментар пише окремий ffmpeg,
+        інакше повторний пакет качав би 590312170_2.m4a, _3…"""
+        def added(fmt, product_id="590312170", ffmpeg="ffmpeg.exe"):
+            job = downloader.Job(url=self.URL, title="t", out_dir=".", product_id=product_id)
+            ydl = mock.MagicMock()
+            opts = {"format": fmt, "ffmpeg_location": ffmpeg}
+            with mock.patch.object(downloader, "applog", mock.MagicMock()):
+                downloader._Runner(job, lambda *a: None)._add_source_comment(ydl, opts)
+            return [c.args[0] for c in ydl.add_post_processor.call_args_list]
+
+        pps = added("140-19")
+        self.assertEqual(len(pps), 1)
+        self.assertIsInstance(pps[0], downloader.SourceCommentPP)
+        self.assertEqual(pps[0].url, self.URL)
+        self.assertEqual(added("137+140-19"), [])          # коментар пише склеювач
+        self.assertEqual(added("140-19", product_id=""), [])  # без ID упізнавати не треба
+        self.assertEqual(added("140-19", ffmpeg=None), [])
+
+    @unittest.skipUnless(tools.find_ffmpeg() and tools.find_ffprobe(), "немає ffmpeg")
+    def test_comment_pp_writes_url(self):
+        import subprocess
+        import yt_dlp
+        ffmpeg = tools.find_ffmpeg()
+        for ext, codec in (("m4a", "aac"), ("mp3", "libmp3lame")):
+            path = os.path.join(self.tmp.name, f"590312170.{ext}")
+            subprocess.run([ffmpeg, "-y", "-v", "error", "-f", "lavfi", "-i", "sine=d=1",
+                            "-c:a", codec, path], check=True,
+                           creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+            with yt_dlp.YoutubeDL({"quiet": True, "ffmpeg_location": ffmpeg}) as ydl:
+                downloader.SourceCommentPP(ydl, self.URL).run({"filepath": path, "ext": ext})
+            self.assertEqual(downloader.probe_file(path)["comment"], self.URL)
+            self.assertEqual(downloader.pick_id_target(self.tmp.name, "590312170", ext,
+                                                       self.URL, None), (path, "skip"))
+        self.assertEqual(sorted(os.listdir(self.tmp.name)), ["590312170.m4a", "590312170.mp3"])
 
     def test_name_without_id_is_translit(self):
         job = downloader.Job(url=self.URL, title="t", out_dir=".", video_key=(1080, 30, "H.264"),

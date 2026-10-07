@@ -20,7 +20,8 @@ import time
 from dataclasses import dataclass, field
 
 import yt_dlp
-from yt_dlp.utils import DownloadCancelled, DownloadError, ISO639Utils
+from yt_dlp.postprocessor.ffmpeg import FFmpegPostProcessor
+from yt_dlp.utils import DownloadCancelled, DownloadError, ISO639Utils, prepend_extension
 
 from . import applog, ffinstall, formats, tools
 
@@ -187,6 +188,25 @@ def track_metadata_args(info, fmt, source_url=None):
                  f"-metadata:s:a:{i}", f"handler_name={title}",
                  f"-disposition:a:{i}", "default" if i == 0 else "0"]
     return args
+
+
+class SourceCommentPP(FFmpegPostProcessor):
+    """Посилання на ролик — у коментар файлу, який не склеювався: лише звук
+    (m4a, mp3) чи відео зі звуком в одному файлі. Склеєному його пише сам
+    склеювач (track_metadata_args). Без коментаря pick_id_target не впізнав би
+    «590312170.m4a» і на повторному пакеті качав би 590312170_2.m4a, _3…"""
+
+    def __init__(self, downloader, url):
+        super().__init__(downloader)
+        self.url = url
+
+    def run(self, info):
+        path = info["filepath"]
+        temp = prepend_extension(path, "temp")
+        self.run_ffmpeg(path, temp, ["-map", "0", "-dn", "-ignore_unknown", "-c", "copy",
+                                     "-metadata", f"comment={self.url}"])
+        os.replace(temp, path)
+        return [], info
 
 
 ALREADY_NOTE = "Уже є в теці — не качав вдруге"
@@ -948,6 +968,7 @@ class _Runner:
                     f"контейнер={self.job.container}, субтитри={self.job.sub_key if with_subs else '—'}")
         try:
             with yt_dlp.YoutubeDL(opts) as ydl:
+                self._add_source_comment(ydl, opts)
                 # Як --load-info-json: info з аналізу вже містить розшифровані
                 # посилання, тож YouTube вдруге не питаємо, а ID на кшталт
                 # 140-19 гарантовано відповідають тим самим доріжкам.
@@ -955,6 +976,19 @@ class _Runner:
                                              download=True)
         finally:
             self.on_network()       # пауза до наступного аналізу — від кінця завантаження
+
+    def _add_source_comment(self, ydl, opts):
+        """Файлу з ID товару, що не склеюється, — посилання в коментар окремим
+        ffmpeg (копіювання потоків, секунди). Склеєному його дописує склеювач."""
+        if not self.job.product_id or "+" in opts["format"]:
+            return
+        if not opts.get("ffmpeg_location"):
+            applog.warning(f"ID {self.job.product_id}: без ffmpeg посилання в файл не записати — "
+                           "при повторному пакеті файл не впізнається")
+            return
+        pp = SourceCommentPP(ydl, self.job.url)
+        pp.add_progress_hook(self._postprocess)     # скасування й тут, як між етапами ffmpeg
+        ydl.add_post_processor(pp, when="post_process")
 
     def _id_opts(self, info, with_subs):
         """Ім'я з ID товару: 590312170, 590312170_2… — див. pick_id_target."""
