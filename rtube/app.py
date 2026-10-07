@@ -8,8 +8,10 @@ statusbar.py (рядок унизу).
 
 import os
 import queue
+import re
 import threading
 import time
+import tkinter
 from tkinter import filedialog, messagebox
 
 import customtkinter as ctk
@@ -39,6 +41,7 @@ DEFAULT_SIZE = (1000, 800)
 JOBS_MIN_HEIGHT = 170      # список — щонайменше два рядки, поки картка не відкрита
 DIR_SHOWN = 48             # скільки символів шляху до теки показувати під полем
 MIN_SIZE = (880, 660)
+TITLE_BAR = 40             # заголовок вікна Windows, справжні пікселі
 CLOSE_TIMEOUT = 5          # скільки чекати зупинки завантаження при закритті, с
 ERROR_FLASH = 3            # скільки тримати червону смужку в панелі задач після помилки, с
 CLIPBOARD_EVERY = 7        # буфер обміну перевіряємо кожне 7-ме опитування (~0,7 с)
@@ -58,7 +61,7 @@ class RTubeApp(ctk.CTk, *_DND_BASES):
             ctk.set_window_scaling(scale)
 
         self.title(f"{APP_TITLE} v{APP_VERSION}")
-        self.geometry(settings.get("geometry") or "{}x{}".format(*DEFAULT_SIZE))
+        self._place_window()
         self.minsize(*MIN_SIZE)
         self.configure(fg_color=uikit.SURFACE_SUNKEN)
         uikit.apply_window_icon(self)
@@ -111,6 +114,37 @@ class RTubeApp(ctk.CTk, *_DND_BASES):
         self.watchdog = watchdog.Watchdog(threading.get_ident())
         self.watchdog.start()
         applog.info(f"Запуск {APP_TITLE} v{APP_VERSION}")
+
+    def _place_window(self):
+        """Розмір — збережений (не більший за екран). Місце — де вікно закрили,
+        якщо той екран досі є, інакше по центру робочої області. Раніше задавався
+        лише розмір, і Windows ставив вікно куди заманеться — здебільшого зліва."""
+        try:
+            w, h = (int(v) for v in (settings.get("geometry") or "").split("x"))
+        except ValueError:
+            w, h = DEFAULT_SIZE
+        try:
+            scale = ctk.ScalingTracker.get_window_scaling(self)
+        except Exception:
+            scale = 1.0
+        left, top, width, height = uikit.work_rect()
+        if width and height:
+            w = max(MIN_SIZE[0], min(w, int(width / scale)))
+            h = max(MIN_SIZE[1], min(h, int((height - TITLE_BAR) / scale)))
+        pw, ph = round(w * scale), round(h * scale)
+        try:
+            x, y = (int(v) for v in (settings.get("window_pos") or "").split(","))
+            saved = uikit.on_screen(x, y, pw)
+        except ValueError:
+            saved = False
+        if not saved:
+            if not (width and height):
+                self.geometry(f"{w}x{h}")
+                return
+            x = left + max(0, (width - pw) // 2)
+            y = top + max(0, (height - ph - TITLE_BAR) // 2)
+        # Позицію CTk не масштабує: x, y — справжні пікселі, розмір — логічний.
+        self.geometry(f"{w}x{h}+{x}+{y}")
 
     def _window_scale(self):
         try:
@@ -993,7 +1027,7 @@ class RTubeApp(ctk.CTk, *_DND_BASES):
         if self.taskbar:
             self.taskbar.clear()
         if self.state() == "normal":
-            settings.set_many(geometry=self._logical_size())
+            settings.set_many(geometry=self._logical_size(), window_pos=self._window_pos())
         self.watchdog.stop()
         if self._relaunch:
             try:
@@ -1003,6 +1037,15 @@ class RTubeApp(ctk.CTk, *_DND_BASES):
                 messagebox.showerror(APP_TITLE, "Не вдалося запустити програму знову — "
                                                 "відкрийте її вручну.", parent=self)
         self.destroy()
+
+    def _window_pos(self):
+        """«x,y» лівого верхнього кута вікна в справжніх пікселях (з wm_geometry Tk)."""
+        try:
+            raw = tkinter.Tk.wm_geometry(self)          # «ШxВ+x+y», без масштабу CTk
+            m = re.fullmatch(r"\d+x\d+\+(-?\d+)\+(-?\d+)", raw)   # ліворуч від екрана: «+-8»
+            return f"{m.group(1)},{m.group(2)}" if m else ""
+        except Exception:
+            return ""
 
     def _logical_size(self):
         """Розмір без DPI-множника: geometry() його знову помножить."""

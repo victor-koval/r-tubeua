@@ -327,6 +327,21 @@ def work_rect():
     return 0, 0, 0, 0
 
 
+def on_screen(x, y, width):
+    """Чи видно заголовок вікна з лівим верхнім кутом (x, y) на якомусь із
+    моніторів — після відключення другого екрана вікно не має «зникнути»."""
+    try:
+        import ctypes
+        import ctypes.wintypes
+        user32 = ctypes.windll.user32
+        user32.MonitorFromPoint.restype = ctypes.c_void_p
+        user32.MonitorFromPoint.argtypes = [ctypes.wintypes.POINT, ctypes.wintypes.DWORD]
+        points = ((x + 40, y + 15), (x + max(80, width) - 40, y + 15))
+        return all(user32.MonitorFromPoint(ctypes.wintypes.POINT(px, py), 0) for px, py in points)
+    except Exception:
+        return False
+
+
 def work_area():
     """Розмір робочої області екрана в справжніх пікселях, без панелі задач."""
     return work_rect()[2:]

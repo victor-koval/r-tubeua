@@ -47,5 +47,16 @@ class WrapTest(unittest.TestCase):
         self.assertAlmostEqual(wrap, width - 4, delta=1)
 
 
+class OnScreenTest(unittest.TestCase):
+    def test_on_screen(self):
+        """Збережене місце вікна з відключеного монітора не приймається."""
+        from rtube import uikit
+        left, top, width, _height = uikit.work_rect()
+        if not width:
+            self.skipTest("робоча область екрана невідома")
+        self.assertTrue(uikit.on_screen(left + 100, top + 100, 800))
+        self.assertFalse(uikit.on_screen(-50000, -50000, 800))
+
+
 if __name__ == "__main__":
     unittest.main()
