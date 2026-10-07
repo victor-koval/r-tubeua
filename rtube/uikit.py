@@ -262,50 +262,111 @@ def wrap_to_width(label, margin=4, minimum=200):
     tk.Misc.bind(label, "<Configure>", on_configure, "+")
 
 
-def bind_text_hotkeys(widget, on_paste=None):
-    """Ctrl+C/V/X/A у CTkEntry незалежно від мовної розкладки.
-
-    on_paste — що зробити після вставки (наприклад, одразу аналізувати).
-    """
+def _text_action(target, action, on_paste=None):
+    """Вирізати / копіювати / вставити / виділити все в полі tk.Entry.
+    У полі пароля скопіювати чи вирізати не можна; у полі «лише читання» —
+    лише скопіювати й виділити."""
     import tkinter as tk
+    try:
+        state = str(target.cget("state"))
+        secret = bool(target.cget("show"))
+    except tk.TclError:
+        state, secret = "normal", False
+    editable = state == "normal"
+    try:
+        has_sel = target.selection_present()
+    except tk.TclError:
+        has_sel = False
+    if action == "paste":
+        if not editable:
+            return
+        try:
+            text = target.clipboard_get()
+        except tk.TclError:
+            return
+        if has_sel:
+            target.delete(tk.SEL_FIRST, tk.SEL_LAST)
+        target.insert(tk.INSERT, text.strip())
+        if on_paste:
+            target.after(10, on_paste)
+    elif action in ("copy", "cut"):
+        if not has_sel or secret:
+            return
+        text = target.get()[target.index(tk.SEL_FIRST):target.index(tk.SEL_LAST)]
+        target.clipboard_clear()
+        target.clipboard_append(text)
+        if action == "cut" and editable:
+            target.delete(tk.SEL_FIRST, tk.SEL_LAST)
+    elif action == "select_all":
+        target.selection_range(0, tk.END)
+        target.icursor(tk.END)
+
+
+def _key_action(event):
+    """Ctrl+V/C/X/A за кодом клавіші — на будь-якій розкладці: на українській
+    keysym у Ctrl+V — не «v», і Tk сам нічого не вставляв."""
+    if not event.state & 0x4:
+        return None
+    code, keysym = event.keycode, (event.keysym or "").lower()
+    if code == KEY_V or keysym == "v":
+        return "paste"
+    if code == KEY_C or keysym == "c":
+        return "copy"
+    if code == KEY_X or keysym == "x":
+        return "cut"
+    if code == KEY_A or keysym == "a":
+        return "select_all"
+    return None
+
+
+def bind_text_hotkeys(widget, on_paste=None):
+    """Ctrl+C/V/X/A у CTkEntry незалежно від мовної розкладки — для поля, якому
+    потрібна дія після вставки (on_paste, напр. одразу аналізувати). Решта полів
+    отримує те саме від install_text_bindings."""
     target = getattr(widget, "_entry", widget)
 
-    def selected():
-        try:
-            return target.selection_present()
-        except Exception:
-            return False
-
     def on_key(event):
-        if not event.state & 0x4:
+        action = _key_action(event)
+        if action is None:
             return None
-        code, keysym = event.keycode, (event.keysym or "").lower()
-        if code == KEY_V or keysym == "v":
-            try:
-                text = target.clipboard_get()
-            except tk.TclError:
-                return "break"
-            if selected():
-                target.delete(tk.SEL_FIRST, tk.SEL_LAST)
-            target.insert(tk.INSERT, text.strip())
-            if on_paste:
-                target.after(10, on_paste)
-            return "break"
-        if code in (KEY_C, KEY_X) or keysym in ("c", "x"):
-            if selected():
-                text = target.get()[target.index(tk.SEL_FIRST):target.index(tk.SEL_LAST)]
-                target.clipboard_clear()
-                target.clipboard_append(text)
-                if code == KEY_X or keysym == "x":
-                    target.delete(tk.SEL_FIRST, tk.SEL_LAST)
-            return "break"
-        if code == KEY_A or keysym == "a":
-            target.selection_range(0, tk.END)
-            target.icursor(tk.END)
-            return "break"
-        return None
+        _text_action(target, action, on_paste)
+        return "break"
 
     target.bind("<Control-KeyPress>", on_key, add="+")
+
+
+def install_text_bindings(root):
+    """Ctrl+C/V/X/A на будь-якій розкладці й меню правою кнопкою — для ВСІХ
+    полів введення програми (і вікон, відкритих пізніше): через клас Entry."""
+    import tkinter as tk
+
+    def on_key(event):
+        action = _key_action(event)
+        if action is None:
+            return None
+        _text_action(event.widget, action)
+        return "break"
+
+    def on_menu(event):
+        target = event.widget
+        target.focus_set()
+        menu = tk.Menu(target, tearoff=0)
+        for label, action, accel in (("Вирізати", "cut", "Ctrl+X"), ("Копіювати", "copy", "Ctrl+C"),
+                                     ("Вставити", "paste", "Ctrl+V"), (None, None, None),
+                                     ("Виділити все", "select_all", "Ctrl+A")):
+            if label is None:
+                menu.add_separator()
+            else:
+                menu.add_command(label=label, accelerator=accel,
+                                 command=lambda a=action: _text_action(target, a))
+        try:
+            menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            menu.grab_release()
+        return "break"
+
+    root.bind_class("Entry", "<Control-KeyPress>", on_key, add="+")
+    root.bind_class("Entry", "<Button-3>", on_menu, add="+")
 
 
 # ── масштаб під малі екрани ─────────────────────────────────────────────

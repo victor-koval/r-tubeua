@@ -147,6 +147,26 @@ if ($testsCode -ne 0) {
 # руками, коли її справді міняють. Інакше кожна збірка могла б «забруднити»
 # дерево новими байтами logo.ico, і коміт версії з -Release потягнув би їх.
 
+# База розкладання FTP (assets\ftp_base.json) вшивається в .exe, щоб нові
+# колеги нічого не збирали. Перед релізом — свіжа: вшита база + те, що
+# зібрано в програмі на цьому комп'ютері (Налаштування → FTP → Оновити базу).
+$ftpBase = Join-Path $root "assets\ftp_base.json"
+if ($Release) {
+    Write-Host "База розкладання FTP…" -ForegroundColor Cyan
+    Push-Location $root
+    & $python -m rtube.ftpstate --export $ftpBase
+    $baseCode = $LASTEXITCODE
+    Pop-Location
+    if ($baseCode -ne 0) {
+        if ($target -ne $current) { Set-AppVersion $current }
+        Write-Host "Базу FTP не вивантажено — реліз не випускаю." -ForegroundColor Red
+        exit 1
+    }
+}
+$baseData = @()
+if (Test-Path $ftpBase) { $baseData = @("--add-data", "$ftpBase;assets") }
+else { Write-Host "Немає assets\ftp_base.json — збірка без бази розкладання FTP" -ForegroundColor Yellow }
+
 Write-Host "Збірка R-TubeUA $target…" -ForegroundColor Cyan
 
 # --collect-all yt_dlp_ejs: JS-скрипти розв'язувача лежать у пакеті як дані,
@@ -165,6 +185,7 @@ Write-Host "Збірка R-TubeUA $target…" -ForegroundColor Cyan
     --icon "$root\assets\logo.ico" `
     --add-data "$root\assets\logo.ico;assets" `
     --add-data "$root\assets\rozetka_theme.json;assets" `
+    @baseData `
     --collect-all customtkinter `
     --collect-all yt_dlp_ejs `
     --collect-all tkinterdnd2 `
@@ -215,6 +236,13 @@ try {
         git -C $root add -- $appFile
         git -C $root commit -q -F $msgFile
         if ($LASTEXITCODE -ne 0) { Write-Host "Не вдалося закомітити версію." -ForegroundColor Red; exit 1 }
+    }
+    $baseChanged = git -C $root status --porcelain -- $ftpBase
+    if ($baseChanged) {
+        [System.IO.File]::WriteAllText($msgFile, "База розкладання FTP для $target`n", $utf8)
+        git -C $root add -- $ftpBase
+        git -C $root commit -q -F $msgFile
+        if ($LASTEXITCODE -ne 0) { Write-Host "Не вдалося закомітити базу FTP." -ForegroundColor Red; exit 1 }
     }
     git -C $root push -q origin HEAD
     if ($LASTEXITCODE -ne 0) { Write-Host "Не вдалося запушити коміт." -ForegroundColor Red; exit 1 }

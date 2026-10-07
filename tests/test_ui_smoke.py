@@ -185,6 +185,8 @@ appupdate.state.update(version=None, path=None)
 # FTP: план → заливання на фальшивий сервер → стан у рядку; вибір теки вручну
 import time
 from rtube import downloader, ftpclient, ftpstate, uploader
+# Своє дерево тек фальшивого сервера, а не вшита база справжнього FTP.
+mock.patch.object(ftpstate, "BASE_NAME", "nema_bazy.json").start(); ftpstate.reset_cache()
 from tests.fakeftp import Server
 server = Server(dirs=["/video/odyag_vzuttya_ta_aksesuari/odyag", "/video/krasa_ta_zdorovya/apteka"])
 hoodie = {"crumbs_ua": ["Одяг, взуття та аксесуари", "Одяг", "Чоловічі худі"], "crumbs_ru": [],
@@ -239,7 +241,9 @@ until(lambda: not a.uploads.is_busy() and all(t.state == uploader.UPLOADED for t
       "обидва залито")
 check("/video/odyag_vzuttya_ta_aksesuari/odyag/590312170.mp4" in server.files, "файл на FTP")
 row = p.rows[files[0].id]
-check(row.lbl_ftp.winfo_manager() and "залито" in row.lbl_ftp.cget("text"), "стан FTP у рядку")
+# Потік уже позначив «залито» — рядок оновиться з наступним опитуванням вікна.
+until(lambda: row.lbl_ftp.winfo_manager() and "залито" in row.lbl_ftp.cget("text"),
+      "стан FTP у рядку")
 check(not p.btn_ftp.winfo_manager(), "усе залито — кнопки «На FTP» немає")
 a.close_ftp(); pump()
 
@@ -248,11 +252,28 @@ a.open_settings(section="ftp"); pump()
 d = a._settings_window
 check(d.ftp_user.get() == "u", "вхід FTP у Налаштуваннях")
 check(d.tab == "FTP", "Налаштування відкрито на вкладці FTP")
+# Ctrl+V/C на будь-якій розкладці — для всіх полів (клас Entry), і в Налаштуваннях
+from types import SimpleNamespace
+from rtube import uikit as _u
+check("<Control-Key>" in a.bind_class("Entry") and "<Button-3>" in a.bind_class("Entry"),
+      "Ctrl+C/V/X/A і меню правою кнопкою — для всіх полів")
+host = d.ftp_host_entry._entry
+host.delete(0, "end"); a.clipboard_clear(); a.clipboard_append("45.128.216.49")
+ua_ctrl_v = SimpleNamespace(state=0x4, keycode=_u.KEY_V, keysym="Cyrillic_em", widget=host)
+check(_u._key_action(ua_ctrl_v) == "paste", "Ctrl+V на українській розкладці впізнано")
+_u._text_action(host, "paste"); pump()
+check(d.ftp_host.get() == "45.128.216.49", "вставка в поле «Сервер»")
+pwd = d.ftp_pass_entry._entry
+pwd.delete(0, "end"); pwd.insert(0, "secret"); pwd.selection_range(0, "end")
+a.clipboard_clear(); a.clipboard_append("щось інше")
+_u._text_action(pwd, "copy"); pump()
+check(a.clipboard_get() == "щось інше", "з поля пароля не копіюється")
 _l, _t, _w, _h = app.uikit.work_rect()
 check(not _h or d.winfo_height() + 30 <= _h, "вікно Налаштувань влазить в екран")
 # два залиті вище файли вже в історії video
-check(d.btn_history.cget("text") == "Зібрати історію" and "video: 2" in d.lbl_history.cget("text"),
-      "кнопка «Зібрати історію» й розмір історії")
+check(d.btn_history.cget("text") == "Оновити базу" and "video — 2" in d.lbl_base.cget("text"),
+      "«База розкладання»: кнопка «Оновити базу» і скільки товарів відомо")
+check(d.btn_ftp_check.cget("text") == "Перевірити вхід", "кнопка «Перевірити вхід»")
 d.destroy(); pump()
 
 a.on_closing(force=True)

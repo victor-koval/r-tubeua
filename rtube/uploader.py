@@ -219,6 +219,7 @@ class UploadManager:
         if task.cancel_event.is_set():
             task.state, task.note = CANCELLED, "Скасовано"
             return
+        reread = False                  # тека зникла — перечитуємо дерево розділу раз
         while True:
             if not task.path:
                 task.state = NEED_CHOICE
@@ -240,6 +241,15 @@ class UploadManager:
                 self._client = None
                 task.state, task.note = CANCELLED, "Скасовано"
                 return
+            except ftpclient.MissingFolder:
+                if reread:
+                    raise
+                reread = True
+                applog.warning(f"FTP: теки {task.folder} немає — перечитую теки {task.section}")
+                ftpstate.save_tree(self._client_ready().read_tree([task.section]))
+                self._files.clear()
+                self._resolve_in(task, task.section)
+                continue
             except ftpclient.NoSpace:
                 self._full.add(task.section)
                 nxt = self._current_section(after=task.section)
