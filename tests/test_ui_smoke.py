@@ -16,12 +16,12 @@ SCRIPT = r"""
 import json, os, sys, tempfile
 from unittest import mock
 sys.path.insert(0, os.getcwd())
-from rtube import app, formats, settings, tools
+from rtube import app, appupdate, formats, settings, tools
 
 tmp = tempfile.mkdtemp()
 real_get = settings.get
-off = ("resume_queue", "check_updates_on_start", "watch_clipboard", "notify_done",
-       "taskbar_progress")
+off = {"resume_queue", "check_updates_on_start", "watch_clipboard", "notify_done",
+       "taskbar_progress", "auto_report"}
 settings_get = mock.patch.object(settings, "get", side_effect=lambda k: False if k in off
                                  else (tmp if k == "download_dir" else real_get(k)))
 settings_set = mock.patch.object(settings, "set_many")
@@ -114,10 +114,28 @@ check(p.btn_retry_failed.winfo_manager() and "(1)" in p.btn_retry_failed.cget("t
       "кнопка «Невдалі (1)»")
 check(p.btn_report.winfo_manager(), "кнопка «Звіт»")
 
+# фільтр: «Помилки» — лише рядок з помилкою
+check(p.seg_filter.winfo_manager(), "фільтр видно, коли є помилка")
+p.set_filter("Помилки"); pump()
+shown = [r.job for r in p.rows.values() if r.winfo_manager()]
+check(shown == [jobs[1]], "у фільтрі «Помилки» лише помилка")
+check(not p.lbl_more.winfo_manager(), "у фільтрі немає підпису про чергу")
+p.set_filter("Усі"); pump()
+check(len([r for r in p.rows.values() if r.winfo_manager()]) == len(p.rows), "«Усі» — усі рядки")
+
 # звіт
 with mock.patch.object(app.uikit, "select_in_explorer", return_value=True):
     p.save_report()
 check(any(n.startswith("zvit_") for n in os.listdir(tmp)), "звіт записано")
+for n in os.listdir(tmp):
+    os.remove(os.path.join(tmp, n))
+
+# автозвіт: пакет (2 товари) спорожнів — звіт пишеться сам
+off.discard("auto_report")
+p.session = {jobs[0].id, jobs[1].id}
+a._on_queue_idle()
+check(any(n.startswith("zvit_") for n in os.listdir(tmp)), "автозвіт після пакета")
+off.add("auto_report")
 
 # пауза
 p.toggle_pause(); pump()
@@ -126,10 +144,37 @@ p.toggle_pause(); pump()
 check(not m.paused, "продовжено")
 
 # повтор невдалих і прибирання завершених
+p.set_filter("Помилки"); pump()
 p.retry_failed(); pump()
 check(len(p.jobs) == 4, "повтор не міняє кількість")
+check(p.filter == "Усі", "після «Невдалі» фільтр знову «Усі»")
 p.clear_finished(); pump()
 check(len(p.jobs) == 3, "завершене прибрано")
+
+# готове оновлення: зелена шапка й кнопка в Налаштуваннях
+check("Налаштування" in a.btn_settings.cget("text"), "без оновлення шапка звичайна")
+a.open_settings(); pump()
+d = a._settings_window
+check(not d.update_line.winfo_manager(), "без оновлення кнопки немає")
+d.destroy(); pump()
+appupdate.state.update(version="9.9.9", path=None)
+a.show_update_badge(); pump()
+check("Є оновлення" in a.btn_settings.cget("text"), "шапка: «Є оновлення»")
+a.open_settings(); pump()
+d = a._settings_window
+check(d.update_line.winfo_manager() and "9.9.9" in d.btn_restart.cget("text"),
+      "кнопка «Оновити до 9.9.9…» в Налаштуваннях")
+# активне завантаження без «продовжувати після перезапуску» — не перезапускаємо
+with mock.patch.object(a, "restart") as restart:
+    d.btn_restart.invoke(); pump()
+    check(d.winfo_exists() and "Дочекайтесь" in d.lbl_check.cget("text") and not restart.called,
+          "перешкода показана у вікні налаштувань")
+    for j in p.active_jobs():
+        m.cancel(j)
+    pump()
+    d.btn_restart.invoke(); pump()
+    check(restart.called and not d.winfo_exists(), "кнопка перезапускає й закриває вікно")
+appupdate.state.update(version=None, path=None)
 
 a.on_closing(force=True)
 print("OK")

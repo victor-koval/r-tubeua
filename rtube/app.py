@@ -125,8 +125,9 @@ class RTubeApp(ctk.CTk, *_DND_BASES):
 
         style = {"fg_color": uikit.HEADER_HOVER, "hover_color": "#403b3b",
                  "text_color": uikit.HEADER_TEXT}
-        ctk.CTkButton(header, text="⚙  Налаштування", width=130, command=self.open_settings,
-                      **style).grid(row=0, column=3, padx=(0, 8))
+        self.btn_settings = ctk.CTkButton(header, text="⚙  Налаштування", width=130,
+                                          command=self.open_settings, **style)
+        self.btn_settings.grid(row=0, column=3, padx=(0, 8))
         ctk.CTkButton(header, text="Лог", width=56, command=applog.open_log_folder,
                       **style).grid(row=0, column=4, padx=(0, 22))
 
@@ -659,8 +660,20 @@ class RTubeApp(ctk.CTk, *_DND_BASES):
             self._clip_last = self._read_clipboard()    # уже скопійоване не підхоплюємо
         elif key == "ytdlp_ready":
             self.statusbar.show_ytdlp_ready(value)
+            self.show_update_badge()
         elif key == "app_ready":
             self.statusbar.show_update_ready()
+            self.show_update_badge()
+
+    def show_update_badge(self):
+        """Готове оновлення: «⚙ Є оновлення» зеленим у шапці веде в Налаштування,
+        де кнопка «Оновити й перезапустити» (рядок унизу вікна колеги не помічали).
+        Відкрите вікно налаштувань одразу показує кнопку."""
+        self.btn_settings.configure(text="⚙  Є оновлення", width=150, fg_color=GREEN,
+                                    hover_color=GREEN_HOVER, text_color="#ffffff")
+        window = self._settings_window
+        if window is not None and window.winfo_exists():
+            window.refresh_updates()
 
     # ── події з фонових потоків ───────────────────────────────────────────
     def _poll(self):
@@ -694,8 +707,10 @@ class RTubeApp(ctk.CTk, *_DND_BASES):
                     self.statusbar.show_environment(*event[1:])
                 elif kind == "ytdlp_ready":
                     self.statusbar.show_ytdlp_ready(event[1])
+                    self.show_update_badge()
                 elif kind == "app_ready":
                     self.statusbar.show_update_ready()
+                    self.show_update_badge()
         except queue.Empty:
             pass
 
@@ -723,10 +738,16 @@ class RTubeApp(ctk.CTk, *_DND_BASES):
         except Exception:
             pass
 
-    def restart(self):
+    def restart_blocker(self):
+        """Чому перезапускати зараз не можна (текст) або None."""
         if self.jobs_panel.active_jobs() and not settings.get("resume_queue"):
-            self.statusbar.set_update_note("Дочекайтесь завершення завантажень, тоді перезапустіть",
-                                           uikit.STATE_WARN)
+            return "Дочекайтесь завершення завантажень, тоді перезапустіть"
+        return None
+
+    def restart(self):
+        blocker = self.restart_blocker()
+        if blocker:
+            self.statusbar.set_update_note(blocker, uikit.STATE_WARN)
             return
         new_exe = appupdate.state["path"]
         if new_exe:

@@ -127,6 +127,8 @@ class SettingsDialog(ctk.CTkToplevel):
             self.focus_set()
         except Exception:
             pass
+        if self.updates_pending():
+            self.after(50, self._scroll_to_updates)
 
     # ── побудова ──
     def _section(self, row, title, builder):
@@ -220,6 +222,20 @@ class SettingsDialog(ctk.CTkToplevel):
         self.lbl_check = ctk.CTkLabel(line, text=self._ytdlp_text(), font=FONT_SMALL,
                                       text_color=uikit.TEXT_MUTED)
         self.lbl_check.pack(side="left", padx=(12, 0))
+        # Готове оновлення — помітною кнопкою тут: унизу головного вікна колеги
+        # її не бачили й думали, що програма не оновлюється.
+        self.update_line = ctk.CTkFrame(body, fg_color="transparent")
+        self.update_line.grid(row=row + 1, column=0, columnspan=2, sticky="w", pady=(10, 0))
+        self.btn_restart = ctk.CTkButton(self.update_line, text="", width=240, height=34,
+                                         font=FONT_UI_BOLD, fg_color=GREEN,
+                                         hover_color=GREEN_HOVER, command=self._restart_now)
+        self.btn_restart.grid(row=0, column=0, sticky="w")
+        self.lbl_restart = ctk.CTkLabel(self.update_line, text="", font=FONT_SMALL,
+                                        text_color=uikit.TEXT_MUTED)
+        self.lbl_restart.grid(row=1, column=0, sticky="w", pady=(2, 0))
+        self.update_line.grid_remove()
+        self._updates_card = body.master
+        self.refresh_updates()
 
     def _build_look(self, body):
         from .app import THEMES
@@ -291,9 +307,56 @@ class SettingsDialog(ctk.CTkToplevel):
                 self.on_change("ytdlp_ready", result["installed"])
             if result.get("app"):
                 self.on_change("app_ready", result["app"])
+            self.refresh_updates()
         else:
             self.lbl_check.configure(text=self._ytdlp_text() + " — найсвіжіший",
                                      text_color=uikit.STATE_OK)
+
+    def refresh_updates(self):
+        """Кнопка «Оновити й перезапустити» — лише коли є що застосувати."""
+        app_version = appupdate.state["version"]
+        ytdlp = ytupdate.state.get("pending")
+        if app_version:
+            text = f"Оновити до {app_version} і перезапустити"
+        elif ytdlp:
+            text = f"Перезапустити — застосувати yt-dlp {ytdlp}"
+        else:
+            self.update_line.grid_remove()
+            return
+        self.lbl_check.configure(text=self._ytdlp_text())
+        self.btn_restart.configure(text=text)
+        if settings.get("resume_queue"):
+            self.lbl_restart.configure(text="Незавершені завантаження докачаються після перезапуску")
+            self.lbl_restart.grid()
+        else:
+            self.lbl_restart.grid_remove()
+        self.update_line.grid()
+
+    def updates_pending(self):
+        return bool(appupdate.state["version"] or ytupdate.state.get("pending"))
+
+    def _restart_now(self):
+        blocker = self.master.restart_blocker()
+        if blocker:
+            self.lbl_check.configure(text=blocker, text_color=uikit.STATE_WARN)
+            return
+        app = self.master
+        try:
+            self.grab_release()
+        except Exception:
+            pass
+        self.destroy()
+        app.after_idle(app.restart)
+
+    def _scroll_to_updates(self):
+        """Готове оновлення — одразу видно кнопку, навіть на низькому екрані."""
+        try:
+            self.update_idletasks()
+            # Сам CTkScrollableFrame — внутрішня рамка в canvas, заввишки з увесь вміст.
+            height = self.body.winfo_height() or 1
+            self.body._parent_canvas.yview_moveto(self._updates_card.winfo_y() / height)
+        except Exception:
+            pass
 
     def _open_config_dir(self):
         os.makedirs(settings.CONFIG_DIR, exist_ok=True)
