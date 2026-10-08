@@ -1071,6 +1071,10 @@ def _eta(seconds):
     return f"{hours} год {minutes:02d} хв"
 
 
+NO_JS_ERROR = ("YouTube не віддав відео без JS-рантайму — натисніть «Встановити JS-рантайм» "
+               "унизу вікна й спробуйте ще раз")
+
+
 def humanize_error(exc):
     """Короткий текст замість простирадла від yt-dlp (повне — у лозі)."""
     text = str(exc).replace("ERROR: ", "").strip()
@@ -1079,6 +1083,10 @@ def humanize_error(exc):
         return "Відео з віковим обмеженням — YouTube не віддає його без входу в акаунт"
     if "private video" in low:
         return "Приватне відео"
+    if "this video is not available" in low and not tools.find_js_runtimes():
+        # Без JS-рантайму yt-dlp ходить обхідним клієнтом, і частину публічних
+        # роликів (перевірено на дитячих) YouTube так не віддає — це не «видалене».
+        return NO_JS_ERROR
     if "video unavailable" in low or "this video is not available" in low:
         return "Відео недоступне (видалене або заблоковане в регіоні)"
     if "sign in to confirm you" in low and "bot" in low:

@@ -25,7 +25,7 @@ except Exception:
     _DND_BASES = ()
 
 from . import (applog, appupdate, credentials, downloader, ffinstall, formats, ftpclient,
-               ftphistory, ftpstate, notify, queuestore, settings, uploader,
+               ftphistory, ftpstate, jsinstall, notify, queuestore, settings, uploader,
                sheets, taskbar, tools, uikit, watchdog, ytupdate)
 from .batch import BatchCard, plural
 from .ftp_card import STATE_TEXT as FTP_STATE_TEXT, FtpCard
@@ -659,7 +659,7 @@ class RTubeApp(ctk.CTk, *_DND_BASES):
             self.taskbar.set_progress(upload[5])      # нічого не качається — прогрес заливання
         elif fraction is not None:
             self.taskbar.set_progress((done + fraction) / total)
-        elif active or self._analyzing or ffinstall.in_progress():
+        elif active or self._analyzing or self.statusbar.installing():
             self.taskbar.set_state(taskbar.INDETERMINATE)
         else:
             self.taskbar.clear()
@@ -971,7 +971,7 @@ class RTubeApp(ctk.CTk, *_DND_BASES):
             self.after(100, self._poll)
 
     def _drain_events(self):
-        self.statusbar.track_ffmpeg_install()
+        self.statusbar.track_installs()
         self._polls += 1
         if self._polls % CLIPBOARD_EVERY == 0 and settings.get("watch_clipboard"):
             self._watch_clipboard()
@@ -1070,6 +1070,7 @@ class RTubeApp(ctk.CTk, *_DND_BASES):
             self._save_queue()
         self._closing = True
         ffinstall.cancel()
+        jsinstall.cancel()
         for job in sorted(active, key=lambda j: j.state == "running"):
             # З resume — лишаємо .part, щоб докачати після запуску.
             self.manager.cancel(job, keep_partial=resume)

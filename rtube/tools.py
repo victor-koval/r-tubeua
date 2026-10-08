@@ -12,6 +12,9 @@ from .settings import CONFIG_DIR
 
 # Куди ffmpeg ставить сама програма (див. ffinstall.py).
 FFMPEG_DIR = os.path.join(CONFIG_DIR, "bin")
+# Куди JS-рантайм (deno чи node) ставить сама програма (див. jsinstall.py). Окремо
+# від bin: встановлення ffmpeg замінює ту теку цілком.
+JS_DIR = os.path.join(CONFIG_DIR, "js")
 
 _VIDEO_ID = re.compile(r"^[A-Za-z0-9_-]{11}$")
 _YT_HOSTS = ("youtube.com", "youtu.be", "youtube-nocookie.com")
@@ -276,8 +279,9 @@ def find_js_runtimes():
 def _runtime_paths():
     found = []
     for exe in ("deno", "node", "bun", "qjs"):
-        local = os.path.join(_app_dir(), exe + ".exe")
-        path = local if os.path.isfile(local) else shutil.which(exe)
+        local = next((p for p in (os.path.join(_app_dir(), exe + ".exe"),
+                                  os.path.join(JS_DIR, exe + ".exe")) if os.path.isfile(p)), None)
+        path = local or shutil.which(exe)
         if path:
             found.append(("quickjs" if exe == "qjs" else exe, path))
     return found
