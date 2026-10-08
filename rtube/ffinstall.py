@@ -11,6 +11,7 @@
 
 import hashlib
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -50,67 +51,74 @@ class InstallCancelled(InstallError):
         super().__init__("скасовано")
 
 
-_lock = threading.Lock()
-_done = threading.Event()
-_done.set()
-_cancel = threading.Event()
-_state = {"running": False, "fraction": None, "text": "", "error": "", "path": None,
-          "cancelled": False}
+class Background:
+    """Встановлення у фоновому потоці: стан для інтерфейсу (status), очікування
+    (wait) і скасування. Один на кожну програму — ffmpeg тут, JS-рантайм у jsinstall."""
 
+    def __init__(self, name, install_fn):
+        """install_fn(progress, cancel) → шлях до встановленого файлу."""
+        self.name = name
+        self._install = install_fn
+        self._lock = threading.Lock()
+        self._done = threading.Event()
+        self._done.set()
+        self._cancel = threading.Event()
+        self._state = {"running": False, "fraction": None, "text": "", "error": "",
+                       "path": None, "cancelled": False}
 
-def status():
-    with _lock:
-        return dict(_state)
+    def status(self):
+        with self._lock:
+            return dict(self._state)
 
+    def in_progress(self):
+        return not self._done.is_set()
 
-def in_progress():
-    return not _done.is_set()
+    def wait(self, timeout=None):
+        """True — встановлення завершилось (успішно чи ні)."""
+        return self._done.wait(timeout)
 
-
-def wait(timeout=None):
-    """True — встановлення завершилось (успішно чи ні)."""
-    return _done.wait(timeout)
-
-
-def start():
-    """Запускає встановлення у фоні; повторний виклик під час роботи нічого не робить."""
-    with _lock:
-        if _state["running"]:
-            return False
-        _state.update(running=True, fraction=0.0, text="Підготовка…", error="", path=None,
-                      cancelled=False)
-        _cancel.clear()
-        _done.clear()
-    threading.Thread(target=_run, daemon=True).start()
-    return True
-
-
-def cancel():
-    """Перериває встановлення на найближчому мегабайті; тимчасове прибирається."""
-    if in_progress():
-        _cancel.set()
+    def start(self):
+        """Запускає встановлення у фоні; повторний виклик під час роботи нічого не робить."""
+        with self._lock:
+            if self._state["running"]:
+                return False
+            self._state.update(running=True, fraction=0.0, text="Підготовка…", error="",
+                               path=None, cancelled=False)
+            self._cancel.clear()
+            self._done.clear()
+        threading.Thread(target=self._run, daemon=True).start()
         return True
-    return False
+
+    def cancel(self):
+        """Перериває встановлення на найближчому мегабайті; тимчасове прибирається."""
+        if self.in_progress():
+            self._cancel.set()
+            return True
+        return False
+
+    def _set(self, **values):
+        with self._lock:
+            self._state.update(values)
+
+    def _run(self):
+        try:
+            path = self._install(lambda fraction, text: self._set(fraction=fraction, text=text),
+                                 self._cancel)
+            self._set(path=path, text=f"{self.name} встановлено")
+        except InstallCancelled:
+            applog.info(f"Встановлення {self.name} скасовано")
+            self._set(cancelled=True, error="")
+        except Exception as exc:
+            applog.error(f"Встановлення {self.name} не вдалося", exc)
+            self._set(error=str(exc) or type(exc).__name__)
+        finally:
+            self._set(running=False)
+            self._done.set()
 
 
-def _set(**values):
-    with _lock:
-        _state.update(values)
-
-
-def _run():
-    try:
-        path = install(lambda fraction, text: _set(fraction=fraction, text=text), _cancel)
-        _set(path=path, text="ffmpeg встановлено")
-    except InstallCancelled:
-        applog.info("Встановлення ffmpeg скасовано")
-        _set(cancelled=True, error="")
-    except Exception as exc:
-        applog.error("Встановлення ffmpeg не вдалося", exc)
-        _set(error=str(exc) or type(exc).__name__)
-    finally:
-        _set(running=False)
-        _done.set()
+_background = Background("ffmpeg", lambda progress, cancel: install(progress, cancel))
+status, in_progress, wait = _background.status, _background.in_progress, _background.wait
+start, cancel = _background.start, _background.cancel
 
 
 # ── саме встановлення ───────────────────────────────────────────────────
@@ -121,17 +129,19 @@ def _open(url, timeout=60):
 
 
 def parse_checksum(text, filename=None):
-    """sha256 з файлу сум: «<hex>» або рядки «<hex>  <ім'я>»."""
+    """sha256 з файлу сум: «<hex>», рядки «<hex>  <ім'я>» або вивід Get-FileHash
+    («Hash      : <HEX>», так їх дає Deno)."""
     for line in text.splitlines():
-        parts = line.strip().split()
-        if not parts or len(parts[0]) != 64:
+        found = re.search(r"(?<![0-9a-fA-F])[0-9a-fA-F]{64}(?![0-9a-fA-F])", line)
+        if not found:
             continue
+        parts = line.split()
         if filename is None or (len(parts) > 1 and parts[-1].lstrip("*") == filename):
-            return parts[0].lower()
+            return found.group(0).lower()
     raise InstallError("у файлі контрольних сум немає потрібного архіву")
 
 
-def _download(url, dest, expected_sha, progress, label, cancel=None):
+def _download(url, dest, expected_sha, progress, label, cancel=None, what="ffmpeg"):
     digest = hashlib.sha256()
     with _open(url, timeout=120) as resp, open(dest, "wb") as out:
         total = int(resp.headers.get("Content-Length") or 0)
@@ -146,7 +156,7 @@ def _download(url, dest, expected_sha, progress, label, cancel=None):
             digest.update(chunk)
             done += len(chunk)
             fraction = done / total if total else None
-            text = f"Завантаження ffmpeg з {label}: {done / CHUNK:.0f}"
+            text = f"Завантаження {what} з {label}: {done / CHUNK:.0f}"
             text += f" з {total / CHUNK:.0f} МБ" if total else " МБ"
             progress(fraction, text)
     if digest.hexdigest().lower() != expected_sha:
