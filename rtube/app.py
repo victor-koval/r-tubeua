@@ -751,7 +751,6 @@ class RTubeApp(ctk.CTk, *_DND_BASES):
                                        section=item.get("section") or "",
                                        path=tuple(item.get("path") or ()),
                                        mpath=item.get("mpath") or [],
-                                       overwrite=bool(item.get("overwrite")),
                                        state=uploader.PLANNED if item.get("path") else
                                        uploader.NEED_CHOICE,
                                        note="Недолите з минулого запуску — доллється")
@@ -872,7 +871,7 @@ class RTubeApp(ctk.CTk, *_DND_BASES):
         """Стан заливання — у рядок завдання (лише коли заливання почалось)."""
         job = self.jobs_panel.jobs.get(task.job_id)
         if job is None or task.state in (uploader.PLANNING, uploader.PLANNED,
-                                         uploader.NEED_CHOICE, uploader.CONFIRM):
+                                         uploader.NEED_CHOICE):
             return
         text = FTP_STATE_TEXT.get(task.state, task.state)
         if task.state == uploader.UPLOADING and task.fraction:

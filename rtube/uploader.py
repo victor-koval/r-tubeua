@@ -19,8 +19,7 @@ from . import applog, ftpcat, ftpclient, ftpstate, rozetka
 _task_ids = itertools.count(1)
 
 # Стани завдання заливання.
-PLANNING, PLANNED, NEED_CHOICE, CONFIRM, ALREADY = \
-    "planning", "planned", "need_choice", "confirm", "already"
+PLANNING, PLANNED, NEED_CHOICE, ALREADY = "planning", "planned", "need_choice", "already"
 QUEUED, UPLOADING, UPLOADED, ERROR, CANCELLED = \
     "queued", "uploading", "uploaded", "error", "cancelled"
 READY = (PLANNED,)                       # можна заливати без питань
@@ -31,10 +30,22 @@ FINISHED = (UPLOADED, ALREADY, ERROR, CANCELLED)
 # На FTP — лише відео товарів; звук (m4a, mp3…) туди не потрапляє ніколи.
 VIDEO_EXTS = (".mp4", ".mkv", ".mov", ".webm", ".avi", ".m4v")
 NOT_VIDEO = "Не відео — на FTP заливаються лише відео"
+# Ім'я на FTP зайняте іншим відео (у товару кілька роликів) — 590312170_2.mp4, _3…
+MAX_NAME_SUFFIX = 99
+NAME_SUFFIX = re.compile(r"_\d+$")
+MAX_RECHECKS = 3                         # ім'я зайняли між планом і заливанням
 
 
 def is_video(path):
     return os.path.splitext(path or "")[1].lower() in VIDEO_EXTS
+
+
+def product_names(name):
+    """«590312170.mp4» (чи «590312170_2.mp4») → [590312170.mp4, 590312170_2.mp4, …
+    590312170_99.mp4] — імена, під якими на FTP лежать відео цього товару."""
+    stem, ext = os.path.splitext(name)
+    base = NAME_SUFFIX.sub("", stem) or stem
+    return [base + ext] + [f"{base}_{n}{ext}" for n in range(2, MAX_NAME_SUFFIX + 1)]
 
 
 @dataclass
@@ -50,7 +61,6 @@ class UploadTask:
     path: tuple = ()                    # тека всередині розділу; () — не визначено
     source: str = None                  # ftpcat.RULE / HISTORY / NAMES
     confidence: float = 0.0
-    overwrite: bool = False             # на FTP інший файл з тим самим ім'ям — замінити
     state: str = PLANNING
     note: str = ""
     fraction: float = 0.0
@@ -68,6 +78,11 @@ class UploadTask:
     def folder(self):
         """«video/odyag_vzuttya_ta_aksesuari/odyag» або ""."""
         return "/".join((self.section,) + tuple(self.path)) if self.path else ""
+
+    @property
+    def renamed(self):
+        """На FTP піде під іншим ім'ям: своє там зайняте іншим відео товару."""
+        return self.name != os.path.basename(self.local)
 
 
 class UploadManager:
@@ -105,7 +120,7 @@ class UploadManager:
             task.cancel_event = threading.Event()
             ftpstate.add_pending(task.local, product_id=task.product_id, name=task.name,
                                  section=task.section, path=list(task.path),
-                                 mpath=task.mpath or [], overwrite=task.overwrite)
+                                 mpath=task.mpath or [])
             self._emit(task)
             self._push("upload", task)
 
@@ -115,6 +130,7 @@ class UploadManager:
             raise ValueError("Такої теки немає в дереві розділу (або це корінь розділу)")
         task.section, task.path, task.source, task.confidence = section, tuple(path), \
             ftpcat.RULE, 1.0
+        task.name = os.path.basename(task.local)        # вільне ім'я в новій теці — заново
         if remember:
             ftpstate.remember(section, task.mpath, task.path)
         task.state, task.note = PLANNED, "Обрано вручну"
@@ -219,6 +235,7 @@ class UploadManager:
                            ftpstate.rules(section))
         task.section, task.path, task.source, task.confidence = section, r.path, r.source, \
             r.confidence
+        task.name = os.path.basename(task.local)        # вільне ім'я в новій теці — заново
         if r.path:
             task.state, task.note = PLANNED, ftpcat.SOURCE_LABELS[r.source]
         elif not task.mpath:
@@ -227,27 +244,46 @@ class UploadManager:
             task.state, task.note = NEED_CHOICE, "Теку не визначено — оберіть"
 
     def _check_existing(self, task):
-        """Файл із таким ім'ям уже в теці: той самий розмір — «уже на FTP», інший —
-        лише з підтвердженням (overwrite)."""
+        """Чи це відео вже в теці: файл того самого розміру під ім'ям товару
+        (ID.mp4, ID_2.mp4…) — «уже на FTP». Якщо ж ім'я зайняте іншим відео (у
+        товару кілька роликів, колись залитих іншими), — перше вільне: ID_2.mp4,
+        ID_3.mp4… Чужих файлів програма не замінює."""
         if not task.path:
             return
         folder = [task.section] + list(task.path)
         key = "/".join(folder)
         if key not in self._files:
             self._files[key] = self._client_ready().list_files(folder)
-        size = self._files[key].get(task.name)
-        if size is None:
-            part = self._files[key].get(task.name + ftpclient.PART_SUFFIX)
-            if part and task.state == PLANNED:
-                task.note = f"Недолите з минулого разу ({part * 100 // max(1, os.path.getsize(task.local))}%) — доллється"
-            return
-        if size == os.path.getsize(task.local):
-            task.ftp_path = f"{key}/{task.name}"
+        files = self._files[key]
+        size = os.path.getsize(task.local)
+        names = product_names(os.path.basename(task.local))
+        same = next((n for n in [task.name] + names if files.get(n) == size), None)
+        if same:
+            task.name, task.ftp_path = same, f"{key}/{same}"
             task.state, task.note = ALREADY, "Уже є на FTP (той самий розмір)"
             ftpstate.mark_uploaded(task.local, task.ftp_path)
             ftpstate.remove_pending(task.local)
-        elif not task.overwrite:
-            task.state, task.note = CONFIRM, "На FTP інший файл з таким ім'ям — замінити?"
+            return
+        if task.name in files:
+            # Лише далі за списком: другий ролик (ID_2) не займе вільне ID.mp4.
+            later = names[names.index(task.name) + 1:] if task.name in names else names
+            free = next((n for n in later if n not in files), None)
+            if free is None:
+                task.state = ERROR
+                task.note = f"У {task.folder} уже {MAX_NAME_SUFFIX} відео цього товару"
+                return
+            task.name = free
+        if task.state != PLANNED:
+            return
+        notes = []
+        if task.renamed:
+            notes.append(f"{os.path.basename(task.local)} на FTP — інше відео, заллю як {task.name}")
+        part = files.get(task.name + ftpclient.PART_SUFFIX)
+        if part:
+            notes.append(f"недолите з минулого разу ({part * 100 // max(1, size)}%) — доллється")
+        if notes:
+            note = "; ".join(notes)
+            task.note = note[0].upper() + note[1:]
 
     # ── заливання ──
     def _upload(self, task):
@@ -256,13 +292,15 @@ class UploadManager:
             return
         reread = False                  # тека зникла — перечитуємо дерево розділу раз
         attempt = 0                     # повтори після обриву (RETRY_WAITS)
+        taken = 0                       # ім'я виявилось зайнятим — перевибір (MAX_RECHECKS)
         while True:
             if not task.path:
                 task.state = NEED_CHOICE
                 task.note = task.note or "Теку не визначено — оберіть"
                 return
             folder = [task.section] + list(task.path)
-            task.state, task.note = UPLOADING, f"Заливаю в {task.folder}…"
+            task.state = UPLOADING
+            task.note = f"Заливаю в {task.folder}" + (f" як {task.name}…" if task.renamed else "…")
             self._emit(task)
 
             clock = {"t": time.monotonic(), "b": None}
@@ -282,18 +320,23 @@ class UploadManager:
             try:
                 task.ftp_path = self._client_ready().upload(
                     task.local, folder, task.name, progress=progress,
-                    cancel=task.cancel_event.is_set, overwrite=task.overwrite)
+                    cancel=task.cancel_event.is_set)
             except ftpclient.Cancelled:
                 self._client = None
                 task.state, task.note = CANCELLED, "Скасовано"
                 return
             except ftpclient.Exists:
-                # Недолите з минулого запуску плану не проходить: файл міг
-                # дозалитись перед закриттям — той самий розмір, тож «уже на FTP».
-                task.state, task.note = CONFIRM, "На FTP інший файл з таким ім'ям — замінити?"
+                # Ім'я зайняли вже після плану (інше завдання того ж товару, колега)
+                # або недолите з минулого запуску встигло дозалитись перед закриттям:
+                # перечитуємо теку — «уже на FTP» чи наступне вільне ім'я.
+                if taken >= MAX_RECHECKS:
+                    raise
+                taken += 1
                 self._files.pop("/".join(folder), None)
                 self._check_existing(task)
-                return
+                if task.state in (ALREADY, ERROR):
+                    return
+                continue
             except ftpclient.MissingFolder:
                 if reread:
                     raise
@@ -315,7 +358,7 @@ class UploadManager:
                 task.note = f"{old} забитий → {task.note}"
                 if task.path:
                     self._check_existing(task)
-                    if task.state in (ALREADY, CONFIRM):
+                    if task.state in (ALREADY, ERROR):
                         return
                 continue
             except (ftpclient.NoSpace, ftpclient.RootForbidden):
@@ -342,7 +385,8 @@ class UploadManager:
             ftpstate.mark_uploaded(task.local, task.ftp_path)
             ftpstate.remove_pending(task.local)
             ftpstate.learn(task.section, task.mpath, task.path)
-            task.state, task.note, task.fraction = UPLOADED, "Залито", 1.0
+            task.state, task.fraction = UPLOADED, 1.0
+            task.note = f"Залито як {task.name}" if task.renamed else "Залито"
             task.sent = task.total = os.path.getsize(task.local)
             applog.info(f"FTP: {task.local} → {task.ftp_path}")
             return

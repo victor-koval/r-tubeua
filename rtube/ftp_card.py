@@ -1,9 +1,9 @@
 """Картка «Заливання на FTP»: план (куди піде кожен файл), правки й заливання.
 
 Тека визначається сама (uploader → ftpcat): ваш вибір → як раніше → за
-назвою. Рядки, де теку не визначено або на FTP уже інший файл з таким ім'ям,
-підсвічено; подвійний клік — обрати теку чи підтвердити заміну. Обрана вручну
-тека запам'ятовується для категорії товару.
+назвою. Рядки, де теку не визначено, підсвічено; подвійний клік — обрати
+теку. Обрана вручну тека запам'ятовується для категорії товару. Якщо на FTP
+під тим самим ім'ям інше відео товару, файл піде як ID_2.mp4, ID_3.mp4…
 """
 
 import tkinter
@@ -18,15 +18,14 @@ from .uikit import FONT_SMALL, FONT_UI, FONT_UI_BOLD, GREEN, GREEN_HOVER
 COLUMNS = ("n", "pid", "file", "folder", "source", "state")
 TABLE_ROWS = 10
 STATE_TEXT = {uploader.PLANNING: "визначаю теку…", uploader.PLANNED: "готово до заливання",
-              uploader.NEED_CHOICE: "оберіть теку", uploader.CONFIRM: "на FTP інший файл",
+              uploader.NEED_CHOICE: "оберіть теку",
               uploader.ALREADY: "уже на FTP", uploader.QUEUED: "у черзі",
               uploader.UPLOADING: "заливаю…", uploader.UPLOADED: "залито",
               uploader.ERROR: "помилка", uploader.CANCELLED: "скасовано"}
-TAGS = {uploader.NEED_CHOICE: "warn", uploader.CONFIRM: "warn", uploader.ERROR: "error",
+TAGS = {uploader.NEED_CHOICE: "warn", uploader.ERROR: "error",
         uploader.UPLOADED: "ok", uploader.ALREADY: "muted", uploader.CANCELLED: "muted",
         uploader.UPLOADING: "info", uploader.QUEUED: "info"}
-EDITABLE = (uploader.PLANNED, uploader.NEED_CHOICE, uploader.CONFIRM, uploader.ERROR,
-            uploader.CANCELLED)
+EDITABLE = (uploader.PLANNED, uploader.NEED_CHOICE, uploader.ERROR, uploader.CANCELLED)
 
 
 class FtpCard(uikit.Card):
@@ -126,7 +125,8 @@ class FtpCard(uikit.Card):
         if task.state == uploader.UPLOADING and task.fraction:
             state = f"заливаю… {task.fraction * 100:.0f}%"
         # Причина — у широкій колонці теки: у вузькій «Стан» вона обрізалась.
-        if task.state in (uploader.ERROR, uploader.NEED_CHOICE) and task.note:
+        if task.note and (task.state in (uploader.ERROR, uploader.NEED_CHOICE) or
+                          task.state == uploader.PLANNED and task.renamed):
             folder = f"— {task.note}" if not task.folder else f"{task.folder} — {task.note}"
         source = ftpcat.SOURCE_LABELS.get(task.source, "—") if task.path else "—"
         return (n, task.product_id, task.name, folder, source, state)
@@ -140,11 +140,10 @@ class FtpCard(uikit.Card):
         self._refresh()
 
     def ready(self):
-        """Що заливати кнопкою: визначені, підтверджені заміни й невдалі з текою —
-        повторне натискання «Залити» доливає те, що обірвалось."""
+        """Що заливати кнопкою: визначені й невдалі з текою — повторне
+        натискання «Залити» доливає те, що обірвалось."""
         return [t for t in self.tasks if uploader.is_video(t.local) and (
                 t.state in uploader.READY or
-                (t.state == uploader.CONFIRM and t.overwrite) or
                 (t.state in (uploader.ERROR, uploader.CANCELLED) and t.path))]
 
     def _refresh(self):
@@ -161,7 +160,6 @@ class FtpCard(uikit.Card):
             parts.append("забиті: " + ", ".join(full))
         for states, label in (((uploader.PLANNING,), "визначаю"),
                               ((uploader.NEED_CHOICE,), "оберіть теку"),
-                              ((uploader.CONFIRM,), "на FTP інший файл"),
                               ((uploader.QUEUED, uploader.UPLOADING), "заливається"),
                               ((uploader.UPLOADED,), "залито"),
                               ((uploader.ALREADY,), "уже на FTP"),
@@ -169,6 +167,10 @@ class FtpCard(uikit.Card):
             c = count(*states)
             if c:
                 parts.append(f"{label}: {c}")
+        renamed = sum(1 for t in self.tasks if t.renamed and t.state not in
+                      (uploader.ALREADY, uploader.ERROR, uploader.CANCELLED))
+        if renamed:
+            parts.append(f"під новим ім'ям (_2, _3…): {renamed}")
         parts.append("подвійний клік — обрати теку")
         self.lbl_summary.configure(text="  ·  ".join(parts))
         busy = count(uploader.QUEUED, uploader.UPLOADING)
@@ -210,14 +212,6 @@ class FtpCard(uikit.Card):
     def _on_double(self, event):
         task = self._task_at(event)
         if task is None or task.state not in EDITABLE:
-            return "break"
-        if task.state == uploader.CONFIRM:
-            if messagebox.askyesno(
-                    "R-TubeUA", f"У {task.folder} уже є інший {task.name}.\n\n"
-                                "Замінити його цим файлом?", parent=self):
-                task.overwrite = True
-                task.note = "Буде замінено"
-                self.update_task(task)
             return "break"
         FolderPicker(self, task, self.app.ftp_sections(), self._chosen,
                      refresh=self.app.refresh_ftp_tree)

@@ -60,8 +60,6 @@ class ClientTest(unittest.TestCase):
         with self.assertRaises(ftpclient.FtpError):
             self.client.upload(self.local, ["video", "tegi"], "590312170.mp4")
         self.assertEqual(self.server.files["/video/tegi/590312170.mp4"], b"old")
-        self.client.upload(self.local, ["video", "tegi"], "590312170.mp4", overwrite=True)
-        self.assertEqual(self.server.files["/video/tegi/590312170.mp4"], self.data())
 
     def test_resume_after_drop(self):
         """Обірване з'єднання — перепідключення й докачування з того місця."""

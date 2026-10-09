@@ -43,7 +43,7 @@ class RootForbidden(FtpError):
 
 
 class Exists(FtpError):
-    """У теці вже є інший файл з таким ім'ям — без overwrite не чіпаємо."""
+    """У теці вже є файл з таким ім'ям — не чіпаємо (uploader візьме ID_2.mp4…)."""
 
 
 class MissingFolder(FtpError):
@@ -223,14 +223,14 @@ class FtpClient:
         return self._call(work)
 
     # ── заливання ──
-    def upload(self, local, parts, name, progress=None, cancel=None, overwrite=False):
+    def upload(self, local, parts, name, progress=None, cancel=None):
         """Заливає local у теку parts (від кореня, напр. ["video", "odyag", "x"]) під
         ім'ям name. Докачує обірване, звіряє розмір. NoSpace — розділ забитий."""
         if len(parts) < 2:
             raise RootForbidden(f"У корінь розділу {'/'.join(parts) or '/'} не заливаємо")
         total = os.path.getsize(local)
         target, temp = parts + [name], parts + [name + PART_SUFFIX]
-        if not overwrite and self.size(target) is not None:
+        if self.size(target) is not None:
             raise Exists(f"{'/'.join(target)} уже є на FTP")
         temp_path = self._wire_path(temp)
         sent = [0]

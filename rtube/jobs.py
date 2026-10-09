@@ -267,7 +267,7 @@ class JobRow(ctk.CTkFrame):
             self.ftp_bar.grid_remove()
         colors = {"uploaded": uikit.STATE_OK, "already": uikit.STATE_OK,
                   "error": uikit.STATE_ERROR, "need_choice": uikit.STATE_WARN,
-                  "confirm": uikit.STATE_WARN, "cancelled": uikit.STATE_WARN}
+                  "cancelled": uikit.STATE_WARN}
         self.lbl_ftp.configure(text=f"↑ FTP: {text}",
                                text_color=colors.get(state, uikit.STATE_INFO))
         self.lbl_status.grid_configure(pady=(0, 0))
