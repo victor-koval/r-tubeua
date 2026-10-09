@@ -303,17 +303,72 @@ class ManagerTest(unittest.TestCase):
         self.manager.cancel(task)                           # користувач передумав
         self.assertEqual(ftpstate.pending(), [])
 
-    def test_existing_different_file_needs_confirm(self):
+    def test_product_names(self):
+        names = uploader.product_names("590312170.mp4")
+        self.assertEqual(names[:3], ["590312170.mp4", "590312170_2.mp4", "590312170_3.mp4"])
+        self.assertEqual(len(names), uploader.MAX_NAME_SUFFIX)
+        self.assertEqual(uploader.product_names("590312170_4.mp4")[:2],
+                         ["590312170.mp4", "590312170_2.mp4"])
+
+    def test_existing_other_video_goes_as_next_free_name(self):
+        """У товару вже є інше відео (інший розмір) — не замінюємо, а кладемо як _2,
+        далі _3: перше вільне."""
+        folder = "/video/odyag_vzuttya_ta_aksesuari/odyag/"
+        self.server.files[folder + "590312170.mp4"] = b"other"
+        self.server.files[folder + "590312170_2.mp4"] = b"other 2"
         local = self.file()
-        self.server.files["/video/odyag_vzuttya_ta_aksesuari/odyag/590312170.mp4"] = b"other"
         task = uploader.UploadTask(local, "590312170")
         self.manager.plan([task])
-        self.wait(task, (uploader.CONFIRM,))
-        task.overwrite = True
+        self.wait(task, (uploader.PLANNED,))
+        self.assertEqual(task.name, "590312170_3.mp4")
+        self.assertIn("заллю як 590312170_3.mp4", task.note)
         self.manager.upload([task])
         self.wait(task, (uploader.UPLOADED,))
+        self.assertEqual(task.ftp_path, "video/odyag_vzuttya_ta_aksesuari/odyag/590312170_3.mp4")
+        self.assertEqual(self.server.files[folder + "590312170.mp4"], b"other")
+        self.assertEqual(self.server.files[folder + "590312170_2.mp4"], b"other 2")
         with open(local, "rb") as f:
-            self.assertEqual(self.server.files["/" + task.ftp_path], f.read())
+            self.assertEqual(self.server.files[folder + "590312170_3.mp4"], f.read())
+        self.assertEqual(task.note, "Залито як 590312170_3.mp4")
+        again = uploader.UploadTask(local, "590312170")
+        self.manager.plan([again])
+        self.wait(again, (uploader.ALREADY,))           # удруге не заливається як _4
+
+    def test_same_video_under_suffix_is_already(self):
+        """Той самий файл колись залили як ID_2.mp4 — «уже на FTP», а не ID_3."""
+        local = self.file()
+        folder = "/video/odyag_vzuttya_ta_aksesuari/odyag/"
+        self.server.files[folder + "590312170.mp4"] = b"other"
+        with open(local, "rb") as f:
+            self.server.files[folder + "590312170_2.mp4"] = f.read()
+        task = uploader.UploadTask(local, "590312170")
+        self.manager.plan([task])
+        self.wait(task, (uploader.ALREADY,))
+        self.assertTrue(task.ftp_path.endswith("/590312170_2.mp4"))
+
+    def test_second_local_video_does_not_take_base_name(self):
+        """Локальне ID_2.mp4: зайняте на FTP — далі _3, а не вільне ID.mp4."""
+        folder = "/video/odyag_vzuttya_ta_aksesuari/odyag/"
+        self.server.files[folder + "590312170_2.mp4"] = b"other"
+        task = uploader.UploadTask(self.file("590312170_2.mp4"), "590312170")
+        self.manager.plan([task])
+        self.wait(task, (uploader.PLANNED,))
+        self.assertEqual(task.name, "590312170_3.mp4")
+
+    def test_name_taken_after_plan_is_renamed(self):
+        """Два файли товару з однаковим ім'ям в одній партії: другий піде як _2."""
+        first = uploader.UploadTask(self.file(), "590312170")
+        os.makedirs(os.path.join(self.tmp.name, "b"))
+        second = uploader.UploadTask(self.file(os.path.join("b", "590312170.mp4"), size=40_000),
+                                     "590312170")
+        self.manager.plan([first, second])
+        self.wait(second, (uploader.PLANNED,))
+        self.assertEqual((first.name, second.name), ("590312170.mp4", "590312170.mp4"))
+        self.manager.upload([first, second])
+        self.wait(second, (uploader.UPLOADED,))
+        self.assertEqual(first.state, uploader.UPLOADED)
+        self.assertEqual(second.name, "590312170_2.mp4")
+        self.assertTrue(second.ftp_path.endswith("/590312170_2.mp4"))
 
     def test_existing_same_size_is_already(self):
         local = self.file()
@@ -323,9 +378,9 @@ class ManagerTest(unittest.TestCase):
         self.manager.plan([task])
         self.wait(task, (uploader.ALREADY,))
 
-    def test_restored_task_already_uploaded_is_not_confirm(self):
+    def test_restored_task_already_uploaded(self):
         """Недолите з минулого запуску (без плану) встигло залитись перед закриттям:
-        той самий розмір — «уже на FTP», а не «замінити?»."""
+        той самий розмір — «уже на FTP», а не ще одна копія як _2."""
         local = self.file()
         with open(local, "rb") as f:
             self.server.files["/video/odyag_vzuttya_ta_aksesuari/odyag/590312170.mp4"] = f.read()
@@ -336,14 +391,17 @@ class ManagerTest(unittest.TestCase):
         self.wait(task, (uploader.ALREADY,))
         self.assertEqual(ftpstate.pending(), [])
 
-    def test_restored_task_other_file_needs_confirm(self):
+    def test_restored_task_other_file_is_renamed(self):
         local = self.file()
         self.server.files["/video/odyag_vzuttya_ta_aksesuari/odyag/590312170.mp4"] = b"other"
         task = uploader.UploadTask(local, "590312170", section="video",
                                    path=("odyag_vzuttya_ta_aksesuari", "odyag"),
                                    state=uploader.PLANNED)
         self.manager.upload([task])
-        self.wait(task, (uploader.CONFIRM,))
+        self.wait(task, (uploader.UPLOADED,))
+        self.assertEqual(task.name, "590312170_2.mp4")
+        self.assertEqual(self.server.files["/video/odyag_vzuttya_ta_aksesuari/odyag/590312170.mp4"],
+                         b"other")
 
     def test_audio_never_uploaded(self):
         """Звук (напр. недолите зі старої версії) на FTP не йде навіть із готовою текою."""
