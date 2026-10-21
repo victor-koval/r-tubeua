@@ -246,8 +246,8 @@ def final_ext(info, fmt, job):
 
 
 def probe_file(path):
-    """Коментар (посилання на ролик), якість і тривалість — одним запуском
-    ffprobe. Порожній словник — не вдалося дізнатися."""
+    """Коментар (посилання на ролик), якість, розмір кадру й тривалість —
+    одним запуском ffprobe. Порожній словник — не вдалося дізнатися."""
     ffprobe = tools.find_ffprobe()
     if not ffprobe:
         return {}
@@ -263,14 +263,16 @@ def probe_file(path):
     fmt = data.get("format") or {}
     tags = {k.lower(): v for k, v in (fmt.get("tags") or {}).items()}
     stream = (data.get("streams") or [{}])[0]
-    quality = None
+    quality, size = None, ()
     if stream.get("width") and stream.get("height"):
-        quality = formats.quality_of(int(stream["width"]), int(stream["height"]))
+        size = (int(stream["width"]), int(stream["height"]))
+        quality = formats.quality_of(*size)
     try:
         duration = float(fmt.get("duration") or 0) or None
     except ValueError:
         duration = None
-    return {"comment": tags.get("comment"), "quality": quality, "duration": duration}
+    return {"comment": tags.get("comment"), "quality": quality, "size": size,
+            "duration": duration}
 
 
 MAX_ID_SUFFIX = 99
@@ -350,6 +352,7 @@ class Job:
     id: int = field(default_factory=lambda: next(_job_ids))
     state: str = "queued"           # queued / running / done / error / cancelled
     duration: float = 0.0           # тривалість з наявного файлу, коли ролик не аналізували
+    resolution: tuple = ()          # (ширина, висота) готового файлу — для звіту
     status: str = "У черзі"         # останній текст стану — для звіту й пізно створеного рядка
     filepath: str = ""
     keep_partial: bool = False      # при скасуванні лишити .part, щоб докачати потім
@@ -578,6 +581,10 @@ class DownloadManager:
             job.state = "done"
             release_info(job)
             if job.filepath and os.path.isfile(job.filepath):
+                # Розмір кадру — з самого файлу: і для скачаного, і для «Уже є»,
+                # і для копії; у звіті так видно ролики, нижчі за вимоги Rozetka.
+                if not job.audio_only:
+                    job.resolution = probe_file(job.filepath).get("size") or ()
                 self._done_files[same_video_key(job)] = job.filepath
                 if self._on_done:
                     self._on_done(dict(self._done_files))

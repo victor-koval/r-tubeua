@@ -7,6 +7,11 @@
 Товари з тим самим роликом ділять один файл (названий за першим ID): у
 «Файлі» в них той самий файл, у «Деталях» — з ким саме, а рядки однієї
 групи зафарбовано одним кольором.
+
+«Роздільна здатність» — розмір кадру готового файлу. Нижчу за вимоги Rozetka
+(квадратне — від 640×640, горизонтальне й вертикальне — від 720p) підсвічено
+червоним, а внизу — скільки таких: на пакеті з сотень роликів їх інакше не
+видно.
 """
 
 import os
@@ -19,12 +24,31 @@ from openpyxl.utils import get_column_letter
 from .uikit import format_min_sec, whole_seconds
 
 HEADERS = ("№", "ID товару", "Посилання", "Назва", "Файл", "Статус", "Деталі",
-           "Тривалість", "Розмір, МБ", "Відео на Rozetka")
+           "Тривалість", "Роздільна здатність", "Розмір, МБ", "Відео на Rozetka")
+RESOLUTION_COL = HEADERS.index("Роздільна здатність") + 1
 MAX_WIDTH = 60
 
 ALREADY_NOTE = "Уже є в теці"     # початок downloader.ALREADY_NOTE
 SAME_VIDEO = "Те саме відео"      # початок downloader.same_video_note
 GROUP_FILLS = ("E2F2E7", "E2EBF7", "F8EED9", "F1E2F0")
+
+MIN_SQUARE = 640        # квадратне відео — не менше 640×640
+MIN_SIDE = 720          # горизонтальне чи вертикальне — коротша сторона від 720 (720p)
+LOW_FILL = PatternFill("solid", fgColor="FFC7CE")
+LOW_FONT = Font(bold=True, color="9C0006")
+
+
+def format_resolution(resolution):
+    """(1280, 720) → «1280x720»; невідомо (лише звук, файлу немає) — «»."""
+    return f"{resolution[0]}x{resolution[1]}" if resolution else ""
+
+
+def is_low_resolution(resolution):
+    """Чи кадр нижчий за вимоги Rozetka до відео товару."""
+    if not resolution:
+        return False
+    width, height = resolution
+    return min(width, height) < (MIN_SQUARE if width == height else MIN_SIDE)
 
 
 def status_label(state, text):
@@ -84,14 +108,15 @@ def default_name(now=None):
 
 def write_report(path, items):
     """items — словники з ключами product_id, url, title, filepath, state,
-    text, duration (секунди або None), ftp (шлях на FTP або стан заливання).
+    text, duration (секунди або None), resolution ((ширина, висота) або ()),
+    ftp (шлях на FTP або стан заливання).
     Повертає path."""
     wb = Workbook()
     ws = wb.active
     ws.title = "Звіт"
     ws.append(HEADERS)
     groups = shared_groups(items)
-    total, counted = 0, set()
+    total, counted, low = 0, set(), 0
     for n, item in enumerate(items, 1):
         path_ = item.get("filepath") or ""
         shares = (item.get("text") or "").startswith(SAME_VIDEO)
@@ -99,6 +124,7 @@ def write_report(path, items):
         if item.get("state") == "done" and path_ and os.path.isfile(path_) and not shares:
             size = round(os.path.getsize(path_) / 1024 / 1024, 1)
         duration = item.get("duration")
+        resolution = tuple(item.get("resolution") or ()) if item.get("state") == "done" else ()
         # «Разом» — кожен файл один раз: товари з тим самим відео часу не додають.
         key = _key(item) or id(item)
         if duration and item.get("state") == "done" and key not in counted:
@@ -113,6 +139,7 @@ def write_report(path, items):
             status_label(item.get("state"), item.get("text")),
             details(item, groups),
             format_min_sec(duration) if duration else "",
+            format_resolution(resolution),
             size,
             item.get("ftp") or "",
         ])
@@ -125,11 +152,22 @@ def write_report(path, items):
             fill = PatternFill("solid", fgColor=GROUP_FILLS[group["index"] % len(GROUP_FILLS)])
             for cell in ws[ws.max_row]:
                 cell.fill = fill
-    if total:
+        if is_low_resolution(resolution):
+            low += 1
+            cell = ws.cell(ws.max_row, RESOLUTION_COL)
+            cell.fill, cell.font = LOW_FILL, LOW_FONT
+    if total or low:
         ws.append([])
+    if total:
         ws.append(["", "", "", "Разом завантажено", "", "", "", format_min_sec(total), None])
         ws.cell(ws.max_row, 4).font = Font(bold=True)
         ws.cell(ws.max_row, 8).font = Font(bold=True)
+    if low:
+        ws.append(["", "", "", f"Нижче {MIN_SQUARE}x{MIN_SQUARE} / {MIN_SIDE}p", "", "", "",
+                   "", low])
+        for col in (4, RESOLUTION_COL):
+            ws.cell(ws.max_row, col).font = LOW_FONT
+        ws.cell(ws.max_row, RESOLUTION_COL).fill = LOW_FILL
 
     for cell in ws[1]:
         cell.font = Font(bold=True)

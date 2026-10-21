@@ -498,6 +498,32 @@ class QuietCancelLogTest(unittest.TestCase):
         self.assertEqual(saved[0][("k",)], "old.mp4")
         self.assertIn(__file__, saved[0].values())
 
+    @unittest.skipUnless(tools.find_ffmpeg() and tools.find_ffprobe(), "немає ffmpeg")
+    def test_done_job_gets_resolution(self):
+        import subprocess
+        import tempfile
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        video = os.path.join(tmp.name, "590312170.mp4")
+        subprocess.run([tools.find_ffmpeg(), "-y", "-v", "error", "-f", "lavfi", "-i",
+                        "color=size=480x360:duration=1", video], check=True,
+                       creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        with mock.patch.object(downloader, "applog", mock.MagicMock()):
+            manager = downloader.DownloadManager()
+            job = downloader.Job(url="u", title="t", out_dir=tmp.name)
+
+            class FakeRunner:
+                def __init__(self, job, *args, **kwargs):
+                    self.job = job
+
+                def run(self):
+                    self.job.filepath = video
+                    return "Готово"
+
+            with mock.patch.object(downloader, "_Runner", FakeRunner):
+                manager._process(job)
+        self.assertEqual(job.resolution, (480, 360))
+
 class SharedVideoQueueTest(unittest.TestCase):
     """Справжня черга: ролик для трьох товарів качається раз, під першим ID."""
 
