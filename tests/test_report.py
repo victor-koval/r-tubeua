@@ -50,11 +50,11 @@ class WriteReportTest(unittest.TestCase):
         self.assertEqual(first[4], "590312170.mp4")
         self.assertEqual(first[5], "Готово")
         self.assertEqual(first[7], "3,27")
-        self.assertEqual(first[8], 3.0)
+        self.assertEqual(first[9], 3.0)
         second = [c.value for c in ws[3]]
         self.assertEqual(second[5], "Помилка")
         self.assertEqual(second[6], "Приватне відео")
-        self.assertIsNone(second[8])
+        self.assertIsNone(second[9])
         # Разом — лише завантажені.
         self.assertEqual(ws.cell(ws.max_row, 8).value, "3,27")
 
@@ -91,8 +91,8 @@ class WriteReportTest(unittest.TestCase):
         self.assertEqual(other[4], "590312170.mp4")
         self.assertEqual(other[5], "Те саме відео")
         self.assertEqual(other[6], same)
-        self.assertEqual(owner[8], 1.0)
-        self.assertIsNone(other[8])         # окремого файлу немає — і розміру теж
+        self.assertEqual(owner[9], 1.0)
+        self.assertIsNone(other[9])         # окремого файлу немає — і розміру теж
         fill = lambda r: ws.cell(r, 1).fill.fgColor.rgb
         self.assertEqual(fill(2), fill(3))
         self.assertNotEqual(fill(2), fill(4))
@@ -124,6 +124,37 @@ class WriteReportTest(unittest.TestCase):
         self.assertEqual(total, f"{shown // 60},{shown % 60:02d}")
         # Точна сума — 99,46 с («1,39»); показані рядки дають більше.
         self.assertNotEqual(total, "1,39")
+
+    def test_resolution_column_highlights_low(self):
+        items = [{"product_id": str(n), "url": f"u{n}", "title": "t", "filepath": "",
+                  "state": "done", "text": "Готово", "duration": 10, "resolution": res}
+                 for n, res in enumerate([(1280, 720), (480, 360), (360, 640), (640, 640),
+                                          (600, 600), ()])]
+        items.append({"product_id": "9", "url": "u9", "title": "t", "filepath": "",
+                      "state": "error", "text": "Приватне відео", "duration": None,
+                      "resolution": (480, 360)})
+        ws = load_workbook(report.write_report(os.path.join(self.tmp.name, "z.xlsx"), items)).active
+        col = report.RESOLUTION_COL
+        self.assertEqual(ws.cell(1, col).value, "Роздільна здатність")
+        cells = [ws.cell(r, col) for r in range(2, len(items) + 2)]
+        self.assertEqual([c.value for c in cells],
+                         ["1280x720", "480x360", "360x640", "640x640", "600x600", None, None])
+        red = [c.fill.fgColor.rgb == "00FFC7CE" for c in cells]
+        self.assertEqual(red, [False, True, True, False, True, False, False])
+        # Унизу — скільки таких.
+        self.assertEqual(ws.cell(ws.max_row, col).value, 3)
+        self.assertEqual(ws.cell(ws.max_row, 4).value, "Нижче 640x640 / 720p")
+
+    def test_low_resolution_rule(self):
+        low = report.is_low_resolution
+        self.assertFalse(low((1280, 720)))      # горизонтальне 720p
+        self.assertFalse(low((720, 1280)))      # вертикальне 720p
+        self.assertTrue(low((854, 480)))
+        self.assertTrue(low((640, 1138)))       # вертикальне, але вужче за 720
+        self.assertFalse(low((640, 640)))       # квадратне — досить 640
+        self.assertTrue(low((480, 480)))
+        self.assertTrue(low((700, 640)))        # не квадратне — потрібні 720
+        self.assertFalse(low(()))
 
     def test_default_name_is_latin(self):
         name = report.default_name(0)

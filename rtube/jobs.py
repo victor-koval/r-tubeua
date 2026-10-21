@@ -101,7 +101,7 @@ def report_items(jobs):
     items = []
     for job in sorted(jobs, key=lambda j: j.id):
         base = {"url": job.url, "title": job.title, "duration": job_duration(job),
-                "ftp": ftp_text(job)}
+                "resolution": job.resolution, "ftp": ftp_text(job)}
         items.append(dict(base, product_id=job.product_id, filepath=job.filepath,
                           state=job.state, text=job.status))
         for pid in job.also_for:
