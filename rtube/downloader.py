@@ -440,10 +440,27 @@ BATCH_GAP = 3
 
 
 def is_rate_limited(exc):
-    """Чи це обмеження запитів від YouTube, яке минає саме за кілька хвилин."""
+    """Чи це обмеження запитів від YouTube, яке минає саме за кілька хвилин.
+
+    Саме «HTTP Error 429» / «Too Many Requests», а не будь-яке «429»: у тексті
+    помилки бувають ім'я файлу з ID товару (590429123.mp4) і кількість байтів —
+    і «немає місця» чекало б 14 хвилин, а потім звалося б обмеженням YouTube."""
     low = str(exc).lower()
-    return "429" in low or "too many requests" in low or \
-        ("sign in to confirm you" in low and "bot" in low)
+    return "http error 429" in low or "too many requests" in low or \
+        ("sign in to confirm you" in low and "not a bot" in low)
+
+
+# Так yt-dlp каже, що YouTube щось змінив і потрібна свіжа версія: сам радить
+# «yt-dlp -U» або не може розібрати сторінку чи підпис.
+OUTDATED_HINTS = ("yt-dlp -u", "please report this issue", "unable to extract",
+                  "failed to extract", "extraction failed", "unable to decode n")
+
+
+def looks_outdated(exc):
+    """Чи схоже, що yt-dlp застарів, — тоді варто шукати свіжий одразу, а не
+    при наступному запуску програми (app.recheck_ytdlp)."""
+    low = str(exc).lower()
+    return not is_rate_limited(exc) and any(hint in low for hint in OUTDATED_HINTS)
 
 
 def release_info(job):
@@ -464,9 +481,10 @@ class DownloadManager:
     ризик отримати 429 (забагато запитів) росте.
     """
 
-    def __init__(self, done_files=None, on_done=None):
+    def __init__(self, done_files=None, on_done=None, on_outdated=None):
         """done_files — що вже скачано (з минулих запусків, queuestore.load_done);
-        on_done(dict) — зберегти його, коли додався новий файл."""
+        on_done(dict) — зберегти його, коли додався новий файл; on_outdated() —
+        ролик упав так, наче yt-dlp застарів (looks_outdated). Обидва — з потоку черги."""
         self.events = queue.Queue()
         self._pending = collections.deque()
         self._cond = threading.Condition()
@@ -478,6 +496,7 @@ class DownloadManager:
         # Rozetka одне відео буває в 9 товарів — качаємо раз, решта посилається на файл.
         self._done_files = dict(done_files or {})
         self._on_done = on_done
+        self._on_outdated = on_outdated
         self._info_cache = {}       # посилання → (час, info); див. INFO_TTL
         self._thread = threading.Thread(target=self._worker, daemon=True)
         self._thread.start()
@@ -573,10 +592,15 @@ class DownloadManager:
                     if job.state == "cancelled":
                         release_info(job)
                     return
+                if is_rate_limited(exc):
+                    self._blocked(job, exc)
+                    return
                 job.state = "error"
                 release_info(job)
                 applog.error(f"Завантаження «{job.title}» ({job.url}) не вдалося", exc)
                 self._emit("state", job, "error", humanize_error(exc))
+                if self._on_outdated and looks_outdated(exc):
+                    self._on_outdated()
                 return
             job.state = "done"
             release_info(job)
@@ -604,6 +628,21 @@ class DownloadManager:
             return
         job.state = "cancelled"
         self._emit("state", job, "cancelled", "Скасовано")
+
+    def _blocked(self, job, exc):
+        """YouTube не пускає й після всіх RATE_LIMIT_WAITS. Таке («підтвердіть, що
+        ви не бот») тримається годинами, і кожен наступний ролик марно чекав би
+        стільки ж, а потім падав. Тож черга стає на паузу, а ролик — першим у
+        ній, як після «Пауза»: «Продовжити» спробує знову з того самого місця."""
+        minutes = round(sum(RATE_LIMIT_WAITS) / 60)
+        applog.warning(f"«{job.title}»: YouTube не пускає вже ~{minutes} хв — черга на паузі: {exc}")
+        with self._cond:
+            self._paused = True
+            job.state = "queued"
+            self._pending.appendleft(job)
+        self._emit("state", job, "queued", f"YouTube не пускає вже ~{minutes} хв — черга на паузі")
+        self._emit("blocked", job, f"YouTube не пускає вже ~{minutes} хв — черга на паузі. "
+                                   "Спробуйте пізніше або з іншої мережі: «▶ Продовжити» над списком")
 
     def _sleep(self, job, seconds, text=None):
         """Чекає, показуючи відлік у рядку. False — завдання скасували чи поставили на паузу."""
@@ -1096,17 +1135,19 @@ def humanize_error(exc):
         return NO_JS_ERROR
     if "video unavailable" in low or "this video is not available" in low:
         return "Відео недоступне (видалене або заблоковане в регіоні)"
-    if "sign in to confirm you" in low and "bot" in low:
+    if "sign in to confirm you" in low and "not a bot" in low:
         return "YouTube вимагає підтвердити, що ви не бот — спробуйте пізніше або з іншої мережі"
-    if "429" in low or "too many requests" in low:
+    if is_rate_limited(exc):
         return "YouTube тимчасово обмежив запити (429) — спробуйте за кілька хвилин"
     if "unsupported url" in low:
         return "Посилання не підтримується"
     if "getaddrinfo failed" in low or "failed to resolve" in low or "unable to connect" in low:
         return "Немає з'єднання з інтернетом"
-    if "no space left" in low or "errno 28" in low:
+    # Windows пише інакше, ніж errno: «not enough space on the disk» (WinError 112),
+    # «being used by another process» (WinError 32 — файл відкритий у плеєрі).
+    if "no space left" in low or "errno 28" in low or "not enough space on the disk" in low:
         return "Не вистачає місця на диску"
-    if "permission denied" in low or "errno 13" in low:
+    if "permission denied" in low or "errno 13" in low or "being used by another process" in low:
         return "Немає доступу до теки або файл відкритий в іншій програмі"
     first = text.splitlines()[0] if text else type(exc).__name__
     return first[:220]
