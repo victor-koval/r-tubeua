@@ -147,5 +147,9 @@ def save():
             with open(tmp, "w", encoding="utf-8") as f:
                 json.dump(_load(), f, ensure_ascii=False, indent=4)
             os.replace(tmp, SETTINGS_PATH)
-        except Exception:
-            pass
+        except Exception as exc:
+            # Без запису в лог незбережені налаштування не пояснити: після
+            # перезапуску вони просто «злітають». applog сам бере звідси
+            # CONFIG_DIR, тож імпорт — тут, а не вгорі.
+            from . import applog
+            applog.error(f"Налаштування не збережено в {SETTINGS_PATH}", exc)

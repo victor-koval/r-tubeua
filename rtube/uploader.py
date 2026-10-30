@@ -361,7 +361,7 @@ class UploadManager:
                     if task.state in (ALREADY, ERROR):
                         return
                 continue
-            except (ftpclient.NoSpace, ftpclient.RootForbidden):
+            except ftpclient.RootForbidden:
                 raise
             except Exception as exc:
                 # Обрив, тайм-аут, недолитий файл: з'єднання заново, докачування з місця обриву.
