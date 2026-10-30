@@ -122,10 +122,14 @@ def reset_cache():
 
 # ── дерево ──
 def _tree_paths(section):
-    local = (_load(TREE).get("sections") or {}).get(section)
-    if local is not None:
-        return local
-    return (base().get("tree") or {}).get(section)
+    paths = (_load(TREE).get("sections") or {}).get(section)
+    if paths is None:
+        paths = (base().get("tree") or {}).get(section)
+    if paths is None:
+        return None
+    # Сміття (node_modules) з давніших перечитувань і бази — геть; вивантажена
+    # для релізу база (export_base) теж буде вже без нього.
+    return [p for p in paths if not any(ftpcat.junk(name) for name in p)]
 
 
 def tree(section):

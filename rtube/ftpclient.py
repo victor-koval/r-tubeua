@@ -16,7 +16,7 @@ import os
 import socket
 import time
 
-from . import applog
+from . import applog, ftpcat
 
 PART_SUFFIX = ".rtube-part"
 BLOCK = 256 * 1024
@@ -186,7 +186,8 @@ class FtpClient:
         return result
 
     def read_tree(self, sections, progress=None, cancel=None):
-        """{розділ: [[тека], [тека, підтека], …]} — лише теки, без файлів."""
+        """{розділ: [[тека], [тека, підтека], …]} — лише теки, без файлів і без
+        сміття на кшталт node_modules (ftpcat.junk): там сотні тек, кожна — запит."""
         tree = {}
         for section in sections:
             paths = []
@@ -195,7 +196,7 @@ class FtpClient:
                 if cancel and cancel():
                     raise Cancelled()
                 for name, is_dir, _size in self.list_dir([section] + parts):
-                    if is_dir:
+                    if is_dir and not ftpcat.junk(name):
                         paths.append(parts + [name])
                         if progress:
                             progress(section, len(paths))

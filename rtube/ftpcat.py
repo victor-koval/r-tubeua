@@ -18,6 +18,10 @@ from dataclasses import dataclass
 # Не категорії: службові теки, «багатий контент» з номерами категорій, теги.
 SKIP = {"rich_content", "tegi", "lost+found", ".snap", "drivers", "drajvera", "manuals",
         "other_content", "pdf", "price", "scripts"}
+# Сміття, залите на FTP разом із відео: у video2 під intel_optane лежить
+# node_modules — 410 тек з 1019 у дереві розділу. Такі теки не читаються
+# (ftpclient.read_tree) і не потрапляють у дерево (ftpstate), як і приховані.
+JUNK = {"node_modules"}
 THRESHOLD = 0.62
 ROOT_THRESHOLD = 0.45   # перший рівень: «Подарунки та сувеніри» ~ podarunki_ta_tovari_dlya_svyat
 ROOT_MARGIN = 0.15      # … але лише з явним відривом від другого кандидата
@@ -47,8 +51,13 @@ def tree_from_paths(paths):
     return tree
 
 
+def junk(name):
+    """Тека, яка не буває категорією за жодних умов: node_modules, приховані (.git…)."""
+    return name in JUNK or name.startswith(".")
+
+
 def usable(name):
-    return name not in SKIP and not name.isdigit()
+    return name not in SKIP and not name.isdigit() and not junk(name)
 
 
 def folder_exists(tree, path):
