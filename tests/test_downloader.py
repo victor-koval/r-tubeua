@@ -324,7 +324,18 @@ class QueueTest(unittest.TestCase):
             downloader.DownloadError("HTTP Error 429: Too Many Requests")))
         self.assertTrue(downloader.is_rate_limited(
             Exception("Sign in to confirm you're not a bot")))
+        self.assertTrue(downloader.is_rate_limited(
+            Exception("Sign in to confirm you’re not a bot. This helps protect our community")))
         self.assertFalse(downloader.is_rate_limited(Exception("Private video")))
+
+    def test_429_inside_other_text_is_not_rate_limit(self):
+        # ID товару з «429» в імені файлу чи кількість байтів — не обмеження YouTube.
+        for text in (r"[Errno 28] No space left on device: 'D:\video\580142917.mp4.part'",
+                     r"[WinError 32] The process cannot access the file because it is being "
+                     r"used by another process: 'C:\Users\x\Downloads\590429123.mp4'",
+                     "Got error: 1342918 bytes read, 2000000 more expected",
+                     "ERROR: [youtube] ab429cdEFgh: Video unavailable"):
+            self.assertFalse(downloader.is_rate_limited(Exception(text)), text)
 
     def test_retries_after_rate_limit(self):
         calls = []
@@ -343,12 +354,53 @@ class QueueTest(unittest.TestCase):
         self.assertEqual(len(calls), 3)
         self.assertTrue(any(k == "progress" and "обмежив" in p[1] for k, p in seen))
 
-    def test_gives_up_after_all_waits(self):
-        self.use_runner(lambda job: (_ for _ in ()).throw(
-            downloader.DownloadError("HTTP Error 429")))
-        job = downloader.Job(url="u", title="t", out_dir=".")
-        self.manager.submit(job)
-        self.assertEqual(self.events_until(job, ("done", "error"))[-1][1][0], "error")
+    def test_blocked_after_all_waits_pauses_queue(self):
+        # YouTube не пускає й після всіх очікувань: ролик не падає (а за ним і
+        # вся черга по 14 хв на кожен) — черга стає на паузу, ролик першим у ній.
+        calls = []
+
+        def run(job):
+            calls.append(job.title)
+            if job.title == "a" and len(calls) <= 4:
+                raise downloader.DownloadError("HTTP Error 429: Too Many Requests")
+            return "Готово"
+
+        self.use_runner(run)
+        a = downloader.Job(url="a", title="a", out_dir=".")
+        b = downloader.Job(url="b", title="b", out_dir=".")
+        self.manager.submit(a)
+        self.manager.submit(b)
+        self.events_until(a, ("running",))
+        seen = self.events_until(a, ("queued", "error", "done"))
+        self.assertEqual(seen[-1][1][0], "queued")
+        self.assertIn("черга на паузі", seen[-1][1][1])
+        kind, job_id, payload = self.manager.events.get(timeout=5)
+        self.assertEqual((kind, job_id), ("blocked", a.id))
+        self.assertIn("Продовжити", payload[0])
+        self.assertTrue(self.manager.paused)
+        time.sleep(0.3)
+        self.assertEqual(calls, ["a"] * 4)          # «b» не починається й не падає
+        self.manager.resume()
+        self.events_until(b, ("done",))
+        self.assertEqual(calls, ["a"] * 5 + ["b"])
+        self.assertEqual(a.state, "done")
+
+    def test_outdated_ytdlp_reported(self):
+        outdated = []
+        self.manager = downloader.DownloadManager(on_outdated=lambda: outdated.append(1))
+        errors = {"old": "ERROR: [youtube] x: Unable to extract yt initial data; please report "
+                         "this issue on https://github.com/yt-dlp/yt-dlp/issues?q= , filling out "
+                         "the appropriate issue template. Confirm you are on the latest version "
+                         "using  yt-dlp -U",
+                  "private": "ERROR: [youtube] y: Private video"}
+        self.use_runner(lambda job: (_ for _ in ()).throw(downloader.DownloadError(errors[job.title])))
+        old = downloader.Job(url="o", title="old", out_dir=".")
+        private = downloader.Job(url="p", title="private", out_dir=".")
+        self.manager.submit(old)
+        self.manager.submit(private)
+        self.events_until(old, ("error",))
+        self.events_until(private, ("error",))
+        self.assertEqual(outdated, [1])
 
     def test_cancel_during_rate_limit_wait(self):
         downloader.RATE_LIMIT_WAITS = (30,)
@@ -448,6 +500,33 @@ class QueueTest(unittest.TestCase):
             started = time.monotonic()
             self.manager._throttle(single)
             self.assertLess(time.monotonic() - started, 0.1)
+
+class HumanizeErrorTest(unittest.TestCase):
+    def test_real_cause_not_hidden_by_429_in_name(self):
+        cases = {
+            r"[Errno 28] No space left on device: 'D:\video\580142917.mp4.part'":
+                "Не вистачає місця на диску",
+            r"[WinError 112] There is not enough space on the disk: 'D:\v\590429123.mp4'":
+                "Не вистачає місця на диску",
+            r"[WinError 32] The process cannot access the file because it is being used by "
+            r"another process: 'C:\Users\x\Downloads\590429123.mp4'":
+                "Немає доступу до теки або файл відкритий в іншій програмі",
+            "ERROR: [youtube] x: HTTP Error 429: Too Many Requests":
+                "YouTube тимчасово обмежив запити (429) — спробуйте за кілька хвилин",
+        }
+        for text, expected in cases.items():
+            self.assertEqual(downloader.humanize_error(Exception(text)), expected, text)
+
+    def test_looks_outdated(self):
+        self.assertTrue(downloader.looks_outdated(Exception(
+            "ERROR: [youtube] x: Unable to extract initial player response; please report this "
+            "issue on https://github.com/yt-dlp/yt-dlp/issues?q= … yt-dlp -U")))
+        self.assertTrue(downloader.looks_outdated(Exception("nsig extraction failed")))
+        for text in ("ERROR: [youtube] x: Private video", "ERROR: [youtube] x: Video unavailable",
+                     "Unable to download webpage: <urlopen error [Errno 11001] getaddrinfo failed>",
+                     "HTTP Error 429: Too Many Requests"):
+            self.assertFalse(downloader.looks_outdated(Exception(text)), text)
+
 
 class InfoCacheTest(unittest.TestCase):
     def test_stale_entries_dropped(self):
