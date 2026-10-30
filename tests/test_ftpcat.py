@@ -76,6 +76,16 @@ class NamesTest(unittest.TestCase):
         tree = ftpcat.tree_from_paths([["rich_content", "80003"], ["tegi"]])
         self.assertEqual(ftpcat.resolve(tree, product(["Теги", "Rich content"])).path, ())
 
+    def test_junk_folders_skipped(self):
+        # node_modules, залитий на FTP під intel_optane, «за назвою» схожий на
+        # «Модулі пам'яті» — і без фільтра відео пішло б у node_modules.
+        tree = ftpcat.tree_from_paths([["intel_optane", "node_modules", "hoek"], [".git"]])
+        self.assertFalse(ftpcat.usable("node_modules"))
+        self.assertFalse(ftpcat.usable(".git"))
+        self.assertFalse(ftpcat.folder_exists(tree, ("intel_optane", "node_modules")))
+        memory = product(["Intel Optane", "Модулі пам'яті"])
+        self.assertEqual(ftpcat.resolve(tree, memory).path, ("intel_optane",))
+
 
 class KnowledgeTest(unittest.TestCase):
     def test_rule_beats_names(self):

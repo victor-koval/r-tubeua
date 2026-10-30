@@ -49,6 +49,21 @@ class StateTest(unittest.TestCase):
         self.assertEqual(ftpstate.index_size("video"), 1)
         self.assertEqual(ftpstate.rules("video"), {"2": ["a"]})
 
+    def test_junk_dropped_from_base_tree(self):
+        # У вшитій базі video2 — 410 тек node_modules: ні у вибір теки, ні в нову базу.
+        base = os.path.join(self.tmp.name, "base.json")
+        with open(base, "w", encoding="utf-8") as f:
+            json.dump({"built_at": 1, "tree": {"video2": [
+                ["bt"], ["intel_optane"], ["intel_optane", "node_modules"],
+                ["intel_optane", "node_modules", "hoek"], [".snap"]]}}, f)
+        with mock.patch.object(ftpstate, "BASE_NAME", base):
+            ftpstate.reset_cache()
+            self.assertEqual(sorted(ftpstate.tree("video2")), [(), ("bt",), ("intel_optane",)])
+            out = os.path.join(self.tmp.name, "export.json")
+            ftpstate.export_base(out)
+            with open(out, encoding="utf-8") as f:
+                self.assertEqual(json.load(f)["tree"]["video2"], [["bt"], ["intel_optane"]])
+
     def test_uploaded_tied_to_file_version(self):
         local = os.path.join(self.tmp.name, "1.mp4")
         with open(local, "wb") as f:

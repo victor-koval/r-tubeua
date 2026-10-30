@@ -31,12 +31,15 @@ class SaveTest(unittest.TestCase):
         self.assertEqual(settings.ftp_sections(), list(settings.FTP_SECTIONS))
 
     def test_failed_write_keeps_old_file(self):
+        from rtube import applog
         settings.set_many(theme="Світла")
-        with mock.patch.object(settings.json, "dump", side_effect=OSError("disk full")):
+        with mock.patch.object(settings.json, "dump", side_effect=OSError("disk full")), \
+                mock.patch.object(applog, "error") as error:
             settings.set_many(theme="Темна")
         with open(self.path, encoding="utf-8") as f:
             self.assertEqual(json.load(f)["theme"], "Світла")
         self.assertFalse(os.path.exists(self.path + ".tmp") and os.path.getsize(self.path) == 0)
+        error.assert_called_once()          # незбережене видно в лозі, а не «злітає» мовчки
 
 
 class MigrationTest(unittest.TestCase):

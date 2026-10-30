@@ -1,7 +1,9 @@
 """Список завантажень: рядки звіту для товарів з тим самим відео й сума тривалостей."""
 
 import os
+import tempfile
 import unittest
+from unittest import mock
 
 from rtube import downloader, formats, jobs
 
@@ -69,6 +71,20 @@ class FtpCandidateTest(unittest.TestCase):
         for name in ("590312170.m4a", "590312170.mp3", "590312170.webm"):
             self.assertFalse(jobs.ftp_candidate(self.done(name, video_key=audio)), name)
         self.assertFalse(jobs.ftp_candidate(self.done("590312170.m4a", video_key=None)))
+
+
+class FileExistsTest(unittest.TestCase):
+    """refresh() 10 разів на секунду питає, чи файл ще на диску, — диск питаємо рідше."""
+
+    def test_answer_lives_ttl(self):
+        clock = mock.Mock(return_value=100.0)
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(jobs._file_checks, clear=True):
+            path = os.path.join(tmp, "590312170.mp4")
+            self.assertFalse(jobs.file_exists(path, clock))
+            open(path, "wb").close()
+            self.assertFalse(jobs.file_exists(path, clock))     # ще стара відповідь
+            clock.return_value += jobs.FILE_CHECK_TTL
+            self.assertTrue(jobs.file_exists(path, clock))
 
 
 if __name__ == "__main__":
