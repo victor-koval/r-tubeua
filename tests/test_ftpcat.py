@@ -78,13 +78,13 @@ class NamesTest(unittest.TestCase):
 
     def test_junk_folders_skipped(self):
         # node_modules, залитий на FTP під intel_optane, «за назвою» схожий на
-        # «Модулі пам'яті» — і без фільтра відео пішло б у node_modules.
+        # «Модулі» (0,73 при порозі 0,62) — без фільтра відео пішло б у node_modules.
         tree = ftpcat.tree_from_paths([["intel_optane", "node_modules", "hoek"], [".git"]])
         self.assertFalse(ftpcat.usable("node_modules"))
         self.assertFalse(ftpcat.usable(".git"))
         self.assertFalse(ftpcat.folder_exists(tree, ("intel_optane", "node_modules")))
-        memory = product(["Intel Optane", "Модулі пам'яті"])
-        self.assertEqual(ftpcat.resolve(tree, memory).path, ("intel_optane",))
+        modules = product(["Intel Optane", "Модулі"])
+        self.assertEqual(ftpcat.resolve(tree, modules).path, ("intel_optane",))
 
 
 class KnowledgeTest(unittest.TestCase):

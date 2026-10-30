@@ -602,7 +602,6 @@ class DownloadManager:
                 if self._on_outdated and looks_outdated(exc):
                     self._on_outdated()
                 return
-            job.state = "done"
             release_info(job)
             if job.filepath and os.path.isfile(job.filepath):
                 # Розмір кадру — з самого файлу: і для скачаного, і для «Уже є»,
@@ -612,6 +611,9 @@ class DownloadManager:
                 self._done_files[same_video_key(job)] = job.filepath
                 if self._on_done:
                     self._on_done(dict(self._done_files))
+            # «Готово» — лише тепер: поки ffprobe читає файл, його не можна ні
+            # відкрити на заливання, ні прибрати (тест падав на WinError 32).
+            job.state = "done"
             self._emit("state", job, "done", note or "Готово")
             return
 
