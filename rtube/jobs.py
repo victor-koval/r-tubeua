@@ -2,6 +2,7 @@
 
 import os
 import queue
+import time
 from tkinter import messagebox
 
 import customtkinter as ctk
@@ -19,6 +20,19 @@ QUEUED_ROWS = 20
 FILTER_ALL, FILTER_FAILED, FILTER_ALREADY = "Усі", "Помилки", "Уже були"
 FILTER_NOT_UPLOADED = "Не на FTP"
 FTP_DONE = ("uploaded", "already")      # uploader: залито / уже було на FTP
+# Чи файл ще на диску, refresh() питає 10 разів на секунду про кожне готове
+# відео з ID: на тисячі файлів це 8 мс з кожних 100, а в мережевій теці — у
+# рази більше. Відповідь живе FILE_CHECK_TTL секунд.
+FILE_CHECK_TTL = 2.0
+_file_checks = {}                       # шлях → (коли перевірено, чи є файл)
+
+
+def file_exists(path, clock=time.monotonic):
+    now = clock()
+    hit = _file_checks.get(path)
+    if hit is None or now - hit[0] >= FILE_CHECK_TTL:
+        hit = _file_checks[path] = (now, os.path.isfile(path))
+    return hit[1]
 
 
 def ftp_candidate(job):
@@ -28,7 +42,7 @@ def ftp_candidate(job):
     return (job.state == "done" and bool(job.product_id) and bool(job.filepath)
             and not job.audio_only and uploader.is_video(job.filepath)
             and not job.status.startswith(downloader.SAME_VIDEO)
-            and job.ftp_state not in FTP_DONE and os.path.isfile(job.filepath))
+            and job.ftp_state not in FTP_DONE and file_exists(job.filepath))
 
 
 def ftp_text(job):
@@ -426,7 +440,14 @@ class JobsPanel(uikit.Card):
         else:
             self.manager.pause()
             applog.info("Черга: пауза")
-        self.btn_pause.configure(text="▶ Продовжити" if self.manager.paused else "⏸ Пауза")
+        self._sync_pause_text()
+
+    def _sync_pause_text(self):
+        """Чергу ставить на паузу й сама черга (YouTube не пускає — downloader._blocked),
+        тож напис кнопки звіряється з нею в кожному refresh()."""
+        text = "▶ Продовжити" if self.manager.paused else "⏸ Пауза"
+        if self.btn_pause.cget("text") != text:
+            self.btn_pause.configure(text=text)
 
     def clear_finished(self):
         for job_id, job in list(self.jobs.items()):
@@ -530,8 +551,9 @@ class JobsPanel(uikit.Card):
 
     # ── події менеджера ──
     def handle_events(self, limit=200):
-        """Розбирає події завантажувача. Повертає (чи змінився стан, чи була помилка)."""
-        started, changed, error = [], False, False
+        """Розбирає події завантажувача. Повертає (чи змінився стан, чи була помилка,
+        текст для підказки, якщо черга сама стала на паузу, або None)."""
+        started, changed, error, blocked = [], False, False, None
         for _ in range(limit):
             try:
                 kind, job_id, payload = self.manager.events.get_nowait()
@@ -539,6 +561,9 @@ class JobsPanel(uikit.Card):
                 break
             job = self.jobs.get(job_id)
             if job is None:
+                continue
+            if kind == "blocked":
+                blocked = payload[0]
                 continue
             if kind == "state":
                 job.status = payload[1]
@@ -559,7 +584,7 @@ class JobsPanel(uikit.Card):
         if started or changed:
             # Черга посунулась — підтягуємо наступні рядки (і лічильник «ще N»).
             self._materialize(force=started)
-        return changed, error
+        return changed, error, blocked
 
     def refresh(self):
         """Заголовок, лічильники й кнопки — з опитування вікна."""
@@ -567,6 +592,7 @@ class JobsPanel(uikit.Card):
         paused = self.manager.paused
         failed = sum(1 for j in self.jobs.values() if j.state in ("error", "cancelled"))
         _show(self.btn_pause, bool(active) or paused, column=0)
+        self._sync_pause_text()
         _show(self.btn_cancel_all, bool(active), column=1)
         _show(self.btn_retry_failed, bool(failed), column=2)
         finished = any(j.state in FINISHED for j in self.jobs.values())
