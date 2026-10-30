@@ -6,7 +6,7 @@ truststore==0.10.4
 # піднімає .\build.ps1 -UpdateYtdlp.
 # [default] тягне yt-dlp-ejs: без нього не розв'язати JS-челендж YouTube,
 # і дубльовані доріжки (зокрема українська ШІ-озвучка) не з'являються.
-yt-dlp[default]==2026.8.19
+yt-dlp[default]==2026.10.26
 # Сповіщення Windows (як трей у Splitter_auto).
 pystray==0.19.5
 # Списки «ID товару — посилання» з Excel (як в Інспекторі Гаджеті).
