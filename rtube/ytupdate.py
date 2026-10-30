@@ -20,6 +20,7 @@ import re
 import shutil
 import subprocess
 import sys
+import threading
 import time
 import urllib.parse
 import urllib.request
@@ -36,6 +37,15 @@ PACKAGES = ("yt_dlp/", "yt_dlp_ejs/")
 
 # Що зараз працює: вшита версія чи з lib, і чи чекає застосування новіша.
 state = {"bundled": None, "active": None, "source": "bundled", "pending": None}
+
+# Перевірка, бо ролики падають (claim_recheck), — не частіше, ніж раз на стільки
+# секунд від будь-якої перевірки: виправлення yt-dlp виходить за кілька годин.
+RECHECK_EVERY = 2 * 3600
+_last_check = None              # time.monotonic() останньої перевірки
+_check_lock = threading.Lock()
+# Перевірка при запуску, «Перевірити зараз» і після збою можуть збігтися в часі,
+# а ставлять в одну й ту саму теку <версія>.tmp — тож по одній.
+_install_lock = threading.Lock()
 
 
 class UpdateError(Exception):
@@ -271,13 +281,39 @@ def _prune(keep):
             shutil.rmtree(path, ignore_errors=True)
 
 
+def claim_recheck(every=RECHECK_EVERY, clock=time.monotonic):
+    """Чи пора шукати свіжий yt-dlp, бо ролики падають: минуло every секунд від
+    останньої перевірки. True — так, і час уже позначено, тож одночасний виклик
+    з іншого потоку отримає False."""
+    global _last_check
+    with _check_lock:
+        now = clock()
+        if _last_check is not None and now - _last_check < every:
+            return False
+        _last_check = now
+        return True
+
+
+def _mark_checked(clock=time.monotonic):
+    global _last_check
+    with _check_lock:
+        _last_check = clock()
+
+
 def check_and_install():
     """Ставить свіжий yt-dlp у lib. Повертає встановлену версію або None.
 
-    Викликається при запуску програми (якщо так налаштовано) і кнопкою
-    «Перевірити зараз». Застосується після перезапуску: модуль yt_dlp у
-    пам'яті вже завантажено.
+    Викликається при запуску програми (якщо так налаштовано), кнопкою
+    «Перевірити зараз» і коли ролики падають так, наче yt-dlp застарів
+    (claim_recheck). Застосується після перезапуску: модуль yt_dlp у пам'яті
+    вже завантажено.
     """
+    with _install_lock:
+        _mark_checked()
+        return _check_and_install()
+
+
+def _check_and_install():
     latest = _get_json(PYPI_JSON.format(name="yt-dlp"))
     version = latest["info"]["version"]
     current = state["pending"] or state["active"] or _loaded_version()
