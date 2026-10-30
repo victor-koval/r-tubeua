@@ -582,7 +582,10 @@ class DownloadManager:
                     release_info(job)
                 return
             except Exception as exc:
-                if is_rate_limited(exc) and attempt < len(RATE_LIMIT_WAITS):
+                if is_rate_limited(exc):
+                    if attempt >= len(RATE_LIMIT_WAITS):
+                        self._blocked(job, exc)
+                        return
                     wait = RATE_LIMIT_WAITS[attempt]
                     applog.warning(f"«{job.title}»: YouTube обмежив запити, повтор через "
                                    f"{wait} с (спроба {attempt + 2}): {exc}")
@@ -591,9 +594,6 @@ class DownloadManager:
                     self._stopped(job)
                     if job.state == "cancelled":
                         release_info(job)
-                    return
-                if is_rate_limited(exc):
-                    self._blocked(job, exc)
                     return
                 job.state = "error"
                 release_info(job)
@@ -634,7 +634,7 @@ class DownloadManager:
         ви не бот») тримається годинами, і кожен наступний ролик марно чекав би
         стільки ж, а потім падав. Тож черга стає на паузу, а ролик — першим у
         ній, як після «Пауза»: «Продовжити» спробує знову з того самого місця."""
-        minutes = round(sum(RATE_LIMIT_WAITS) / 60)
+        minutes = max(1, round(sum(RATE_LIMIT_WAITS) / 60))
         applog.warning(f"«{job.title}»: YouTube не пускає вже ~{minutes} хв — черга на паузі: {exc}")
         with self._cond:
             self._paused = True
