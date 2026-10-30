@@ -364,6 +364,7 @@ class SettingsDialog(ctk.CTkToplevel):
             if not app.ftp_ready():
                 self.lbl_history.configure(text="спершу вкажіть вхід на FTP вище",
                                            text_color=uikit.STATE_WARN)
+                self.lbl_history.grid()
                 return
             app.start_history()
         self._poll_history()
@@ -379,8 +380,9 @@ class SettingsDialog(ctk.CTkToplevel):
             color = uikit.STATE_ERROR if status.get("error") else \
                 uikit.STATE_INFO if running else uikit.TEXT_MUTED
             self.lbl_history.configure(text=status["text"][:300], text_color=color)
+            self.lbl_history.grid()
         else:
-            self.lbl_history.configure(text="")
+            self.lbl_history.grid_remove()      # порожній рядок під кнопкою — зайве місце
         self.btn_history.configure(text="Зупинити оновлення" if running else "Оновити базу")
         if running:
             self.after(1000, self._poll_history)
