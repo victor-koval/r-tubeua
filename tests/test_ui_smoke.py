@@ -149,6 +149,15 @@ check(m.paused and "пауза" in p.lbl_jobs.cget("text"), "пауза")
 p.toggle_pause(); pump()
 check(not m.paused, "продовжено")
 
+# YouTube не пускає — черга сама стала на паузу (downloader._blocked)
+m._paused = True
+m._emit("blocked", jobs[2], "YouTube не пускає вже ~14 хв — черга на паузі")
+pump()
+check(p.btn_pause.cget("text") == "▶ Продовжити", "сама пауза — кнопка «Продовжити»")
+check("черга на паузі" in a.lbl_url_hint.cget("text"), "підказка про блокування")
+p.toggle_pause(); pump()
+check(not m.paused and p.btn_pause.cget("text") == "⏸ Пауза", "продовжено після блокування")
+
 # повтор невдалих і прибирання завершених
 p.set_filter("Помилки"); pump()
 p.retry_failed(); pump()
