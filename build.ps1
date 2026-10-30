@@ -221,9 +221,8 @@ if (-not $Release) { return }
 $body = $releaseNotes.Trim()
 $ytdlp = & $python -c "import yt_dlp.version as v; print(v.__version__)"
 $body += "`n`nyt-dlp $ytdlp"
-$body += "`n`n---`n`nУстановлення не потрібне — один файл. ffmpeg програма за потреби " +
-         "поставить сама (кнопка внизу вікна). Бажано мати Node.js ≥ 22 " +
-         "(``winget install OpenJS.NodeJS.LTS``) — запас на випадок, якщо YouTube змінить правила видачі доріжок."
+$body += "`n`n---`n`nУстановлення не потрібне — один файл. ffmpeg і JS-рантайм програма за " +
+         "потреби поставить сама (кнопки внизу вікна)."
 
 # Кирилицю передаємо ФАЙЛАМИ: Windows PowerShell 5.1 перекодовує аргументи
 # зовнішніх програм у системну кодову сторінку, і git/gh отримали б «????».

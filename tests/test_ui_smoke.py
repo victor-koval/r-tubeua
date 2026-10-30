@@ -232,7 +232,7 @@ check("(1)" in card.btn_upload.cget("text"), "кнопка «Залити на F
 tasks["111"].mpath = ["777"]
 from rtube.ftp_card import FolderPicker
 picker = FolderPicker(card, tasks["111"], ["video"], card._chosen); pump()
-picker.tree.selection_set("krasa_ta_zdorovyaapteka")
+picker.tree.selection_set("krasa_ta_zdorovya\x1fapteka")
 picker._ok()
 until(lambda: not a.uploads.is_busy() and tasks["111"].state == uploader.PLANNED, "обрана тека")
 check(ftpstate.rules("video").get("777") == ["krasa_ta_zdorovya", "apteka"], "вибір запам'ятався")
