@@ -314,8 +314,11 @@ class SettingsDialog(ctk.CTkToplevel):
         self.btn_history = uikit.SecondaryButton(line, text="Оновити базу", width=160,
                                                  command=self._toggle_history)
         self.btn_history.pack(side="left")
-        self.lbl_history = ctk.CTkLabel(line, text="", font=FONT_SMALL, text_color=uikit.TEXT_MUTED)
-        self.lbl_history.pack(side="left", padx=(12, 0))
+        # Стан — окремим рядком під кнопкою, з переносом: «Готово. У базі відео —
+        # video: 2931, video2: 1329, …» поруч із кнопкою не влазив і обрізався.
+        self.lbl_history = ctk.CTkLabel(body, text="", font=FONT_SMALL, text_color=uikit.TEXT_MUTED,
+                                        anchor="w", justify="left", wraplength=540)
+        self.lbl_history.grid(row=3, column=0, columnspan=2, sticky="w", pady=(4, 0))
         self._poll_history()
 
     def _toggle_section(self, name):
@@ -375,7 +378,7 @@ class SettingsDialog(ctk.CTkToplevel):
         if status:
             color = uikit.STATE_ERROR if status.get("error") else \
                 uikit.STATE_INFO if running else uikit.TEXT_MUTED
-            self.lbl_history.configure(text=status["text"][:90], text_color=color)
+            self.lbl_history.configure(text=status["text"][:300], text_color=color)
         else:
             self.lbl_history.configure(text="")
         self.btn_history.configure(text="Зупинити оновлення" if running else "Оновити базу")
