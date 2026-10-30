@@ -68,7 +68,8 @@ class RTubeApp(ctk.CTk, *_DND_BASES):
         uikit.install_text_bindings(self)    # Ctrl+C/V/X/A і меню в усіх полях
 
         self.manager = downloader.DownloadManager(done_files=queuestore.load_done(),
-                                                  on_done=queuestore.save_done)
+                                                  on_done=queuestore.save_done,
+                                                  on_outdated=self.recheck_ytdlp)
         # FTP: вхід — у пам'яті; з «Запам'ятати» — сервер і логін у налаштуваннях,
         # пароль у Диспетчері облікових даних Windows.
         self.ftp_login = self._load_ftp_login()
@@ -237,18 +238,32 @@ class RTubeApp(ctk.CTk, *_DND_BASES):
         # кожному запуску (без таймера), якщо це не вимкнено в налаштуваннях.
         if not settings.get("check_updates_on_start"):
             return
-        try:
-            installed = ytupdate.check_and_install()
-            if installed:
-                self.ui_events.put(("ytdlp_ready", installed))
-        except Exception as exc:
-            applog.error("Оновлення yt-dlp не вдалося — працюю на поточному", exc)
+        self._check_ytdlp()
         try:
             version = appupdate.check_and_download(APP_VERSION)
             if version:
                 self.ui_events.put(("app_ready", version))
         except Exception as exc:
             applog.error("Перевірка оновлення R-TubeUA не вдалася", exc)
+
+    def _check_ytdlp(self):
+        """Свіжий yt-dlp з PyPI (у фоновому потоці); готовий — кнопка «Перезапустити»."""
+        try:
+            installed = ytupdate.check_and_install()
+            if installed:
+                self.ui_events.put(("ytdlp_ready", installed))
+        except Exception as exc:
+            applog.error("Оновлення yt-dlp не вдалося — працюю на поточному", exc)
+
+    def recheck_ytdlp(self):
+        """Ролик чи аналіз упав так, наче YouTube щось змінив і yt-dlp застарів
+        (downloader.looks_outdated). Програму тримають відкритою днями, тож свіжий
+        шукаємо одразу, а не при наступному запуску, — не частіше, ніж раз на
+        ytupdate.RECHECK_EVERY. Кличеться й з потоку черги: Tk тут не чіпаємо."""
+        if not settings.get("check_updates_on_start") or not ytupdate.claim_recheck():
+            return
+        applog.info("Схоже, YouTube щось змінив — перевіряю свіжий yt-dlp")
+        threading.Thread(target=self._check_ytdlp, daemon=True).start()
 
     def send_environment(self):
         try:
@@ -429,6 +444,8 @@ class RTubeApp(ctk.CTk, *_DND_BASES):
             except Exception as exc:
                 applog.error(f"Аналіз {url} не вдався", exc)
                 self.ui_events.put(("analyze_error", token, downloader.humanize_error(exc)))
+                if downloader.looks_outdated(exc):
+                    self.recheck_ytdlp()
 
         self._start_background(work, "Отримую список якостей і доріжок… (5–15 секунд)")
 
@@ -440,6 +457,8 @@ class RTubeApp(ctk.CTk, *_DND_BASES):
             except Exception as exc:
                 applog.error(f"Плейлист {url} не розгорнувся", exc)
                 self.ui_events.put(("analyze_error", token, downloader.humanize_error(exc)))
+                if downloader.looks_outdated(exc):
+                    self.recheck_ytdlp()
 
         self._start_background(work, "Отримую список відео плейлиста чи каналу…")
 
@@ -686,6 +705,14 @@ class RTubeApp(ctk.CTk, *_DND_BASES):
         if report_path:
             text += f" · звіт {os.path.basename(report_path)}"
         notify.show(APP_TITLE, text)
+
+    def _on_blocked(self, text):
+        """YouTube не пускає вже довго — черга сама стала на паузу (downloader._blocked).
+        Кажемо про це помітно: на великому пакеті вікно часто згорнуте."""
+        self.hint(text, uikit.STATE_ERROR)
+        if settings.get("notify_done") and \
+                (self.focus_displayof() is None or self.state() == "iconic"):
+            notify.show(APP_TITLE, "YouTube не пускає — черга на паузі")
 
     # ── FTP ───────────────────────────────────────────────────────────────
     def _load_ftp_login(self):
@@ -1001,11 +1028,13 @@ class RTubeApp(ctk.CTk, *_DND_BASES):
             pass
 
         self._drain_uploads()
-        changed, error = self.jobs_panel.handle_events()
+        changed, error, blocked = self.jobs_panel.handle_events()
         if changed:
             self._queue_dirty = True
         if error:
             self._error_until = time.monotonic() + ERROR_FLASH
+        if blocked:
+            self._on_blocked(blocked)
         active = self.jobs_panel.refresh()
         if self._was_active and not active:
             self._on_queue_idle()
