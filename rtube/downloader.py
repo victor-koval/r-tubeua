@@ -611,8 +611,8 @@ class DownloadManager:
                 self._done_files[same_video_key(job)] = job.filepath
                 if self._on_done:
                     self._on_done(dict(self._done_files))
-            # «Готово» — лише тепер: поки ffprobe читає файл, його не можна ні
-            # відкрити на заливання, ні прибрати (тест падав на WinError 32).
+            # «Готово» — лише тепер, разом із подією: поки ffprobe читає файл,
+            # його не прибрати (тест на цьому зрідка падав з WinError 32).
             job.state = "done"
             self._emit("state", job, "done", note or "Готово")
             return
