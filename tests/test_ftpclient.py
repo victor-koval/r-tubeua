@@ -39,6 +39,18 @@ class ClientTest(unittest.TestCase):
         self.assertEqual(tree["video2"], [["bt"]])
         self.assertNotIn(["readme.txt"], tree["video"])
 
+    def test_read_tree_skips_junk(self):
+        # У video2 хтось залив node_modules — сотні тек, кожна була б окремим запитом.
+        for d in ("/video2/intel_optane/node_modules/hoek/test", "/video2/.git/objects"):
+            self.server.dirs.update({d.rsplit("/", n)[0] for n in range(d.count("/"))})
+        listed = []
+        real = self.client.list_dir
+        with mock.patch.object(self.client, "list_dir",
+                               side_effect=lambda parts: listed.append(parts) or real(parts)):
+            tree = self.client.read_tree(["video2"])
+        self.assertEqual(sorted(tree["video2"]), [["bt"], ["intel_optane"]])
+        self.assertFalse(any("node_modules" in parts or ".git" in parts for parts in listed))
+
     def test_upload_via_temp_name(self):
         parts = ["video", "odyag_vzuttya_ta_aksesuari", "odyag"]
         done = self.client.upload(self.local, parts, "590312170.mp4")

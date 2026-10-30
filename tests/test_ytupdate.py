@@ -10,6 +10,8 @@ import json
 import os
 import sys
 import tempfile
+import threading
+import time
 import unittest
 import zipfile
 from unittest import mock
@@ -243,11 +245,54 @@ class InstallTest(ActivateTest):
 
     def test_no_timer_checks_every_time(self):
         # Раніше перевірка пропускалась, якщо була менш ніж 12 год тому.
-        self.settings.values["ytdlp_checked_at"] = __import__("time").time()
+        self.settings.values["ytdlp_checked_at"] = time.time()
         with contextlib.ExitStack() as stack:
             for p in self.fake_pypi():
                 stack.enter_context(p)
             self.assertEqual(ytupdate.check_and_install(), "2099.1.1")
+
+
+class RecheckTest(unittest.TestCase):
+    """Перевірка, бо ролики падають (app.recheck_ytdlp): не частіше за RECHECK_EVERY."""
+
+    def setUp(self):
+        patch = mock.patch.object(ytupdate, "_last_check", None)
+        patch.start()
+        self.addCleanup(patch.stop)
+
+    def test_not_more_often_than_every(self):
+        clock = mock.Mock(return_value=1000.0)
+        self.assertTrue(ytupdate.claim_recheck(every=7200, clock=clock))
+        self.assertFalse(ytupdate.claim_recheck(every=7200, clock=clock))
+        clock.return_value += 7199
+        self.assertFalse(ytupdate.claim_recheck(every=7200, clock=clock))
+        clock.return_value += 1
+        self.assertTrue(ytupdate.claim_recheck(every=7200, clock=clock))
+
+    def test_any_check_postpones_recheck(self):
+        # Щойно перевіряли (при запуску чи «Перевірити зараз») — після збою ще рано.
+        with mock.patch.object(ytupdate, "_check_and_install", return_value=None):
+            ytupdate.check_and_install()
+        self.assertFalse(ytupdate.claim_recheck())
+
+    def test_checks_run_one_at_a_time(self):
+        # Перевірка при запуску, «Перевірити зараз» і після збою ставлять в одну теку.
+        active, overlaps = [], []
+
+        def fake():
+            active.append(1)
+            if len(active) > 1:
+                overlaps.append(1)
+            time.sleep(0.05)
+            active.pop()
+
+        with mock.patch.object(ytupdate, "_check_and_install", side_effect=fake):
+            threads = [threading.Thread(target=ytupdate.check_and_install) for _ in range(3)]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join()
+        self.assertEqual(overlaps, [])
 
 
 if __name__ == "__main__":
